@@ -78,6 +78,17 @@ st.set_page_config(page_title="족보 문제 추출기", page_icon="📄", layou
 st.title("📄 족보 문제 추출기")
 st.caption("등록해 둔 기출문제에서 원하는 문제만 골라 하나의 PDF로 만듭니다. (엑셀 불필요)")
 
+# 결과물 품질은 한글 폰트에 좌우되므로 현재 상태를 알려준다
+_fname, _fpath = extractor.font_status()
+if _fpath is None:
+    st.warning(
+        "한글 폰트를 찾지 못해 내장 기본 폰트로 출력됩니다. "
+        "이 경우 한글과 영문이 서로 다른 서체로 섞여 자간이 불균일해 보입니다.\n\n"
+        "해결: 저장소에 `packages.txt`(내용 `fonts-nanum`)를 두거나, "
+        "`fonts/NanumBarunGothic.ttf` 파일을 함께 올리세요.",
+        icon="⚠️",
+    )
+
 
 # ===========================================================================
 # 1. 자료실 — 한 번 등록하면 계속 보관
