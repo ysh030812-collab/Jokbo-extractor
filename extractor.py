@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-족보 문제 추출 핵심 모듈
-- 엑셀(족보 정리)에 강의안 번호 기입
+족보 문제 추출 핵심 모듈 (엑셀 불필요 버전)
 - 선택한 문제만 추출하여 하나의 PDF로 병합
+- 풀이 PDF가 있으면 우선 사용, 없으면 시험 DOCX에서 재렌더링
 - 풀이 있는 문제: 풀이 PDF에서 (문제+해설) 페이지 블록 추출
 - 풀이 없는 문제: 시험 DOCX를 PDF로 변환 후 해당 문제 페이지 추출
 - 연도 최신 -> 오래된 순 정렬
@@ -12,7 +12,6 @@ import re
 import glob
 from io import BytesIO
 
-import openpyxl
 from pypdf import PdfReader, PdfWriter
 
 
@@ -153,33 +152,57 @@ def make_title_page(title, subtitle=""):
 # 파일 이름 규칙
 #   시험 문제 :  "{연도} {과목} {중간기말}.docx"          (예: 2023 감면 기말.docx)
 #   풀이       :  "{연도} {과목} {중간기말} 풀이.pdf"      (예: 2023 감면 기말 풀이.pdf)
-#   족보 정리  :  "{과목} {중간기말} 족보 정리.xlsx"       (예: 감면 기말 족보 정리.xlsx)
 # ---------------------------------------------------------------------------
 
 
-def _c(v):
-    return "" if v is None else str(v).strip()
+def scan_library(folder):
+    """자료 폴더에 등록된 파일을 훑어 시험 세트 목록을 반환.
 
+    반환: [{"year": int, "term": str, "subject": str,
+            "solution": 파일명 or None, "docx": 파일명 or None}, ...]
+    (연도 최신 -> 오래된 순)
+    """
+    sets = {}   # (year, term) -> dict
+    if not os.path.isdir(folder):
+        return []
 
-def _norm_term(v):
-    s = str(v).strip()
-    if "중간" in s:
-        return "중간"
-    if "기말" in s:
-        return "기말"
-    return s
+    for path in sorted(glob.glob(os.path.join(folder, "*"))):
+        name = os.path.basename(path)
+        if name.startswith("~$") or name.startswith("."):
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in (".pdf", ".docx"):
+            continue
 
+        m = re.search(r"(19|20)\d{2}", name)
+        if not m:
+            continue
+        year = int(m.group(0))
+        term = "중간" if "중간" in name else ("기말" if "기말" in name else None)
+        if term is None:
+            continue
 
-def find_xlsx(folder, subject, term):
-    """족보 정리 엑셀 파일 경로를 찾는다."""
-    exact = os.path.join(folder, f"{subject} {term} 족보 정리.xlsx")
-    if os.path.exists(exact):
-        return exact
-    cands = [p for p in glob.glob(os.path.join(folder, "*.xlsx"))
-             if "족보" in os.path.basename(p) and not os.path.basename(p).startswith("~$")]
-    if cands:
-        return cands[0]
-    raise FileNotFoundError("족보 정리 엑셀 파일을 찾지 못했습니다.")
+        # 과목명 추정: "{연도} {과목} {학기}" 형태에서 가운데 토큰
+        subject = ""
+        mm = re.search(r"(?:19|20)\d{2}\s+(.+?)\s+(?:중간|기말)", name)
+        if mm:
+            subject = mm.group(1).strip()
+
+        key = (year, term)
+        rec = sets.setdefault(key, {
+            "year": year, "term": term, "subject": subject,
+            "solution": None, "docx": None,
+        })
+        if not rec["subject"] and subject:
+            rec["subject"] = subject
+
+        if ext == ".pdf" and "풀이" in name:
+            rec["solution"] = name
+        elif ext == ".docx" and "풀이" not in name:
+            rec["docx"] = name
+
+    return sorted(sets.values(),
+                  key=lambda r: (-r["year"], _TERM_ORDER.get(r["term"], 9)))
 
 
 def find_source(folder, year, subject, term, kind):
@@ -205,74 +228,6 @@ def find_source(folder, year, subject, term, kind):
             if str(year) in b and term in b and "풀이" not in b:
                 return p
         return None
-
-
-# ---------------------------------------------------------------------------
-# 엑셀 처리
-# ---------------------------------------------------------------------------
-def _locate_columns(ws):
-    header = [_c(c.value) for c in ws[1]]
-    col = {}
-    for i, h in enumerate(header):
-        if "강의안" in h:
-            col["lec"] = i
-        elif "년도" in h or "연도" in h:
-            col.setdefault("year", i)
-        elif "중간" in h or "기말" in h:
-            col.setdefault("term", i)
-        elif "문제" in h:
-            col.setdefault("qnum", i)
-        elif "풀이" in h:
-            col.setdefault("sol", i)
-    return col
-
-
-def load_index(xlsx_path):
-    """엑셀을 읽어 {(year, term, qnum): 풀이유무('O'/'X')} 딕셔너리를 반환."""
-    wb = openpyxl.load_workbook(xlsx_path)
-    ws = wb.active
-    col = _locate_columns(ws)
-    index = {}
-    for row in ws.iter_rows(min_row=2):
-        yv = row[col["year"]].value
-        if yv is None or str(yv).strip() == "":
-            continue
-        try:
-            year = int(str(yv).strip())
-            qnum = int(str(row[col["qnum"]].value).strip())
-        except (ValueError, TypeError):
-            continue
-        term = _norm_term(row[col["term"]].value)
-        raw = _c(row[col["sol"]].value).upper() if "sol" in col else ""
-        sol = "O" if raw.startswith("O") else "X"
-        index[(year, term, qnum)] = sol
-    wb.close()
-    return index
-
-
-def write_lecture_numbers(xlsx_path, selections, lecture_no):
-    """selections=[(year, term, qnum), ...] 행의 강의안 번호 칸에 lecture_no 기입 후 저장."""
-    wb = openpyxl.load_workbook(xlsx_path)
-    ws = wb.active
-    col = _locate_columns(ws)
-    want = set(selections)
-    updated = 0
-    for row in ws.iter_rows(min_row=2):
-        yv = row[col["year"]].value
-        if yv is None or str(yv).strip() == "":
-            continue
-        try:
-            year = int(str(yv).strip())
-            qnum = int(str(row[col["qnum"]].value).strip())
-        except (ValueError, TypeError):
-            continue
-        term = _norm_term(row[col["term"]].value)
-        if (year, term, qnum) in want:
-            row[col["lec"]].value = lecture_no
-            updated += 1
-    wb.save(xlsx_path)
-    wb.close()
-    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -589,51 +544,23 @@ def render_docx_questions_to_pages(qdatas, header):
 _TERM_ORDER = {"기말": 0, "중간": 1}
 
 
-def build_pdf(folder, subject, lecture_no, rows, out_path, log=print):
+def build_pdf(folder, subject, rows, out_path, log=print):
     """
-    rows: [(year, term, [qnum, ...]), ...]  (줄마다 중간/기말 지정, 최대 7행)
-    반환: (출력 PDF 경로, 강의안번호 기입 개수, 경고 리스트)
+    rows: [(year, term, [qnum, ...]), ...]  (줄마다 중간/기말 지정)
+    반환: (출력 PDF 경로, 추출된 문제 수, 경고 리스트)
+
+    엑셀 없이 동작한다. 각 문제는 풀이 PDF에서 먼저 찾고,
+    없으면 시험 DOCX에서 파싱해 재렌더링한다.
     """
     warnings = []
 
-    # 학기별 엑셀 인덱스 캐시 (중간/기말 엑셀이 따로 있을 수 있음)
-    xlsx_cache = {}   # term -> (xlsx_path, index)
-
-    def get_xlsx(term):
-        if term not in xlsx_cache:
-            path = find_xlsx(folder, subject, term)
-            xlsx_cache[term] = (path, load_index(path))
-            log(f"엑셀 파일({term}): {os.path.basename(path)}")
-        return xlsx_cache[term]
-
     # 선택 항목 정리
-    selections = []   # (year, term, qnum, 풀이유무)
+    selections = []   # (year, term, qnum)
     for year, term, qnums in rows:
-        try:
-            _path, index = get_xlsx(term)
-        except FileNotFoundError:
-            index = {}
-            warnings.append(f"{subject} {term} 족보 엑셀을 찾지 못함")
         for q in qnums:
-            key = (year, term, q)
-            if key in index:
-                selections.append((year, term, q, index[key]))
-            else:
-                selections.append((year, term, q, None))
-                warnings.append(f"엑셀에 없음: {year} {term} {q}번 (풀이유무 미상 → 풀이 우선 시도)")
+            selections.append((year, term, q))
 
-    # 1) 엑셀에 강의안 번호 기입 (학기별 엑셀에 각각 기록)
-    updated = 0
-    by_term = {}
-    for (y, t, q, _s) in selections:
-        by_term.setdefault(t, []).append((y, t, q))
-    for term, sels in by_term.items():
-        if term in xlsx_cache:
-            path, _idx = xlsx_cache[term]
-            updated += write_lecture_numbers(path, sels, lecture_no)
-    log(f"엑셀에 강의안 번호 {lecture_no} 기입: {updated}개 행")
-
-    # 2) 연도 최신 -> 오래된 순. 같은 연도는 기말 -> 중간, 그 안에서 문제번호 오름차순
+    # 연도 최신 -> 오래된 순. 같은 연도는 기말 -> 중간, 그 안에서 문제번호 오름차순
     selections.sort(key=lambda x: (-x[0], _TERM_ORDER.get(x[1], 9), x[2]))
 
     # 3) 원본별 캐시
@@ -656,36 +583,32 @@ def build_pdf(folder, subject, lecture_no, rows, out_path, log=print):
         stats["added"] += len(pending)
         pending.clear()
 
-    for (year, term, q, sol) in selections:
+    for (year, term, q) in selections:
         key = (year, term)
         # 새로운 (연도, 학기) 구간이 시작되면: 이전 대기분 출력 -> 표지 삽입
         if key != cur_key:
             flush_pending()
             cur_key = key
             writer.add_page(make_title_page(f"{year}", f"{subject} {term}"))
-        use_solution = (sol == "O") or (sol is None)
         placed = False
 
-        if use_solution:
-            src = find_source(folder, year, subject, term, "풀이")
-            if src:
-                if key not in sol_cache:
-                    log(f"풀이 PDF 분석: {os.path.basename(src)}")
-                    sol_cache[key] = map_solution_blocks(src)
-                blocks, reader = sol_cache[key]
-                if q in blocks:
-                    flush_pending()   # 순서 유지를 위해 대기 중 docx 먼저 출력
-                    s, e = blocks[q]
-                    for p in range(s, e):
-                        writer.add_page(reader.pages[p])
-                    stats["added"] += 1
-                    placed = True
-                    log(f"  ✓ {year} {term} {q}번 (풀이 {e - s}p)")
-                else:
-                    warnings.append(f"{year} {term} 풀이 PDF에서 {q}번 블록을 찾지 못함")
-            elif sol == "O":
-                warnings.append(f"{year} {term} 풀이 PDF 파일이 없음")
+        # 1순위: 풀이 PDF에서 (문제+해설) 블록 추출
+        src = find_source(folder, year, subject, term, "풀이")
+        if src:
+            if key not in sol_cache:
+                log(f"풀이 PDF 분석: {os.path.basename(src)}")
+                sol_cache[key] = map_solution_blocks(src)
+            blocks, reader = sol_cache[key]
+            if q in blocks:
+                flush_pending()   # 순서 유지를 위해 대기 중 docx 먼저 출력
+                s, e = blocks[q]
+                for p in range(s, e):
+                    writer.add_page(reader.pages[p])
+                stats["added"] += 1
+                placed = True
+                log(f"  ✓ {year} {term} {q}번 (풀이 {e - s}p)")
 
+        # 2순위: 시험 DOCX에서 파싱해 재렌더링
         if not placed:
             docx = find_source(folder, year, subject, term, "문제")
             if docx:
@@ -696,11 +619,15 @@ def build_pdf(folder, subject, lecture_no, rows, out_path, log=print):
                 if q in qmap:
                     pending.append(qmap[q])
                     placed = True
-                    log(f"  ✓ {year} {term} {q}번 (문제 재렌더링 대기)")
+                    log(f"  ✓ {year} {term} {q}번 (문제 재렌더링)")
                 else:
-                    warnings.append(f"{year} {term} 시험 DOCX에서 {q}번을 찾지 못함")
+                    warnings.append(
+                        f"{year} {term} {q}번: 풀이 PDF와 시험 DOCX 어디에서도 찾지 못함")
+            elif src:
+                warnings.append(
+                    f"{year} {term} {q}번: 풀이 PDF에 블록이 없고, 시험 DOCX 파일도 없음")
             else:
-                warnings.append(f"{year} {term} 시험 DOCX 파일이 없음")
+                warnings.append(f"{year} {term}: 풀이 PDF와 시험 DOCX 파일이 모두 없음")
 
     flush_pending()   # 마지막 구간 대기분 출력
     added = stats["added"]
@@ -711,4 +638,4 @@ def build_pdf(folder, subject, lecture_no, rows, out_path, log=print):
     with open(out_path, "wb") as f:
         writer.write(f)
     log(f"완료: {added}개 문제 → {os.path.basename(out_path)}")
-    return out_path, updated, warnings
+    return out_path, added, warnings
