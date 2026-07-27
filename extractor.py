@@ -21,19 +21,32 @@ from pypdf import PdfReader, PdfWriter
 _FONTS = None  # (regular, bold)
 
 # (패밀리이름, 일반 TTF 경로, 볼드 TTF 경로) — 위에서부터 먼저 발견되는 것을 사용
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
 _FONT_CANDIDATES = [
-    # Windows - 맑은 고딕
-    ("KoreanUI", r"C:\Windows\Fonts\malgun.ttf", r"C:\Windows\Fonts\malgunbd.ttf"),
-    # Windows - 나눔고딕(설치된 경우)
-    ("KoreanUI", r"C:\Windows\Fonts\NanumGothic.ttf", r"C:\Windows\Fonts\NanumGothicBold.ttf"),
-    # macOS - Apple SD 산돌고딕 Neo
-    ("KoreanUI", "/System/Library/Fonts/AppleSDGothicNeo.ttc", None),
-    ("KoreanUI", "/Library/Fonts/AppleSDGothicNeo.ttc", None),
-    # Linux - 나눔고딕
+    # 0) 저장소에 함께 넣어둔 폰트 (가장 확실 — 어느 서버에서든 동일한 결과)
+    ("KoreanUI", os.path.join(_HERE, "fonts", "NanumBarunGothic.ttf"),
+     os.path.join(_HERE, "fonts", "NanumBarunGothicBold.ttf")),
+    ("KoreanUI", os.path.join(_HERE, "fonts", "NanumGothic.ttf"),
+     os.path.join(_HERE, "fonts", "NanumGothicBold.ttf")),
+    # 1) Linux - 나눔바른고딕 (본문 가독성이 좋아 최우선)
+    ("KoreanUI", "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+     "/usr/share/fonts/truetype/nanum/NanumBarunGothicBold.ttf"),
     ("KoreanUI", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
      "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf"),
+    # 2) Windows - 맑은 고딕
+    ("KoreanUI", r"C:\Windows\Fonts\malgun.ttf", r"C:\Windows\Fonts\malgunbd.ttf"),
+    ("KoreanUI", r"C:\Windows\Fonts\NanumBarunGothic.ttf",
+     r"C:\Windows\Fonts\NanumBarunGothicBold.ttf"),
+    ("KoreanUI", r"C:\Windows\Fonts\NanumGothic.ttf", r"C:\Windows\Fonts\NanumGothicBold.ttf"),
+    # 3) macOS - Apple SD 산돌고딕 Neo
+    ("KoreanUI", "/System/Library/Fonts/AppleSDGothicNeo.ttc", None),
+    ("KoreanUI", "/Library/Fonts/AppleSDGothicNeo.ttc", None),
+    # 4) Noto Sans CJK
     ("KoreanUI", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
      "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+    ("KoreanUI", "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+     "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"),
 ]
 
 
@@ -66,13 +79,26 @@ def _ensure_fonts():
         except Exception:
             continue
 
-    # 폴백: reportlab 내장 한국어 고딕(산세리프). 별도 파일 불필요.
+    # 폴백: reportlab 내장 한국어 고딕. 별도 파일이 필요 없지만
+    # 영문이 Helvetica로 따로 렌더링되어 한글과 섞이면 모양이 떨어진다.
+    # (되도록 fonts/ 폴더에 NanumBarunGothic.ttf 를 넣어 이 경로를 피할 것)
     try:
         pdfmetrics.registerFont(UnicodeCIDFont("HYGothic-Medium"))
+        pdfmetrics.registerFontFamily(
+            "HYGothic-Medium", normal="HYGothic-Medium", bold="HYGothic-Medium",
+            italic="HYGothic-Medium", boldItalic="HYGothic-Medium")
         _FONTS = ("HYGothic-Medium", "HYGothic-Medium")
     except Exception:
         _FONTS = ("Helvetica", "Helvetica-Bold")
     return _FONTS
+
+
+def font_status():
+    """현재 사용 중인 폰트 정보를 (이름, 실제_TTF경로_또는_None) 로 반환. UI 안내용."""
+    for name, reg, _bold in _FONT_CANDIDATES:
+        if reg and os.path.exists(reg):
+            return name, reg
+    return "HYGothic-Medium(내장)", None
 
 
 def _ensure_title_font():
@@ -461,18 +487,33 @@ def render_docx_questions_to_pages(qdatas, header):
     from reportlab.lib.utils import ImageReader
 
     font, font_bold = _ensure_fonts()
+
+    # 한글 조판 공통 설정
+    #  - wordWrap="CJK": 한글은 단어 단위가 아니라 글자 단위로 줄바꿈해야 자연스럽다.
+    #    (미설정 시 공백 없는 긴 한글이 여백을 넘거나 줄 끝이 들쭉날쭉해진다)
+    #  - leading: 글자 크기의 약 1.65배. 한글은 라틴보다 행간을 넉넉히 줘야 읽기 편하다.
+    #  - alignment=0(왼쪽): 양쪽 정렬은 한글에서 낱말 사이가 벌어져 자간이 불균일해 보인다.
+    CJK = {"wordWrap": "CJK", "alignment": 0, "splitLongWords": True}
+
     stem_style = ParagraphStyle(
-        "stem", fontName=font, fontSize=13, leading=21, spaceAfter=7, textColor="#1F2933")
+        "stem", fontName=font, fontSize=11.5, leading=19, spaceAfter=6,
+        textColor="#1A2028", **CJK)
+    # 선지: 번호는 지문 텍스트와 같은 위치에서 시작하고,
+    #       둘째 줄부터는 선지 본문에 맞춰 들여쓴다(매달린 들여쓰기).
     choice_style = ParagraphStyle(
-        "choice", fontName=font, fontSize=12, leading=20, leftIndent=16, textColor="#333F4B")
+        "choice", fontName=font, fontSize=11, leading=17.5,
+        leftIndent=36, firstLineIndent=-16, spaceAfter=2,
+        textColor="#2B3440", **CJK)
     bogi_style = ParagraphStyle(
-        "bogi", fontName=font, fontSize=11.5, leading=18, leftIndent=16, rightIndent=6,
-        textColor="#333F4B", backColor="#F1F4F8", borderPadding=6, spaceBefore=2, spaceAfter=6)
+        "bogi", fontName=font, fontSize=10.5, leading=17, leftIndent=14, rightIndent=8,
+        textColor="#2B3440", backColor="#F2F5F9", borderColor="#DDE4EC", borderWidth=0.5,
+        borderPadding=7, spaceBefore=4, spaceAfter=7, **CJK)
     note_style = ParagraphStyle(
-        "note", fontName=font, fontSize=12, leading=19, spaceBefore=1, spaceAfter=4,
-        textColor="#1F2933")
+        "note", fontName=font, fontSize=11, leading=18, spaceBefore=1, spaceAfter=4,
+        textColor="#1A2028", **CJK)
     head_style = ParagraphStyle(
-        "head", fontName=font_bold, fontSize=11, leading=15, textColor="#2E6CA4")
+        "head", fontName=font_bold, fontSize=9.5, leading=13,
+        textColor="#5B7A99", **CJK)
 
     def esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -489,10 +530,20 @@ def render_docx_questions_to_pages(qdatas, header):
         story.append(HRFlowable(width="100%", thickness=0.5, color="#cccccc",
                                  spaceBefore=2, spaceAfter=10))
 
-    for qd in qdatas:
-        block = [Paragraph(
-            f"<font name='{font_bold}' color='#2E6CA4'>{qd['num']}.</font> {esc(qd['stem'])}",
-            stem_style)]
+    # 문제 지문: 번호를 왼쪽으로 내밀고 둘째 줄부터 지문에 맞춰 정렬
+    stem_hang = ParagraphStyle(
+        "stemHang", parent=stem_style, leftIndent=20, firstLineIndent=-20)
+
+    for qi, qd in enumerate(qdatas):
+        block = []
+        if qi > 0:
+            # 문제 사이 얇은 구분선 — 여백만으로 나누면 경계가 흐릿하다
+            block.append(HRFlowable(width="100%", thickness=0.4, color="#E8ECF1",
+                                    spaceBefore=0, spaceAfter=13))
+        block.append(Paragraph(
+            f"<font name='{font_bold}' color='#2E6CA4'>{qd['num']}.</font>&nbsp;"
+            f"{esc(qd['stem'])}",
+            stem_hang))
         for blob in qd.get("images", []):
             try:
                 ir = ImageReader(BytesIO(blob))
@@ -525,11 +576,14 @@ def render_docx_questions_to_pages(qdatas, header):
                 block.append(Paragraph(esc(text), note_style))
         flush_bogi()
 
+        if qd.get("choices"):
+            block.append(Spacer(1, 3))
         for i, ch in enumerate(qd.get("choices", []), start=1):
-            # 요청 형식: 1) 2) 3) ...
-            block.append(Paragraph(f"{i}) {esc(ch)}", choice_style))
-        # 문제 사이 여백 (요청: 줄바꿈 한 번 더)
-        block.append(Spacer(1, 16))
+            # 요청 형식: 1) 2) 3) ...  (번호는 옅은 남색으로 살짝 구분)
+            block.append(Paragraph(
+                f"<font color='#6B8CAD'>{i})</font>&nbsp;{esc(ch)}", choice_style))
+        # 문제 사이 여백 (다음 문제의 구분선이 위 여백을 담당)
+        block.append(Spacer(1, 8))
         story.append(KeepTogether(block))
 
     doc.build(story)
