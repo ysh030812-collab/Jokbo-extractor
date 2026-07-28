@@ -315,6 +315,20 @@ def _is_bogi_header(line):
             or s.startswith("보기>") or s.startswith("보기]") or s.startswith("<보 기"))
 
 
+def _is_annotation(line):
+    """줄 전체가 괄호로 묶인 '정리자 주석'인지.
+
+    족보 파일에는 원본 문제에 없던 설명이 괄호로 덧붙는 경우가 많다.
+      예) "(H3N2와 H1N1 바이러스가 유전자 재조합하는 그림)"
+          "(보기 8개 중, 정답 4개 고르는 문제)"
+    이런 줄은 선지가 아니라 안내문이므로 번호를 붙이면 안 된다.
+    """
+    s = line.strip()
+    return (len(s) >= 2
+            and s[0] in "(（[" and s[-1] in ")）]"
+            and not _is_bogi_item(s))
+
+
 def _is_bogi_item(line):
     """'가.' '나.' … / 'ㄱ.' 'ㄴ.' … 처럼 '보기 항목'(단일 라벨)인지."""
     return bool(_KOX_RE.match(line) or _JAMO_RE.match(line))
@@ -345,9 +359,18 @@ def _classify_body(lines):
       presented = [(줄 텍스트, is_bogi_bool), ...]   # 번호 없이 그대로 표시
       choices   = [선지 텍스트, ...]                 # 렌더 시 1) 2) 3) ...
     """
-    lines = [l for l in lines if l]
-    if not lines:
+    # 입력은 (줄, 워드_목록서식_여부) 튜플. 예전 형식(문자열)도 받아들인다.
+    items = []
+    for it in lines:
+        if isinstance(it, tuple):
+            txt, is_list = it
+        else:
+            txt, is_list = it, False
+        if txt:
+            items.append((txt, is_list))
+    if not items:
         return [], []
+    lines = [t for t, _ in items]
 
     # 선지에 쓰인 표기를 감지 (대시 > 동그라미 > 숫자 순)
     if any(_DASH_RE.match(l) for l in lines):
@@ -367,35 +390,115 @@ def _classify_body(lines):
             if m:
                 choices.append(m.group(m.lastindex).strip())   # 표기 있는 줄 = 선지
             else:
-                presented.append((l, _is_bogi_header(l) or _is_bogi_item(l)))
+                presented.append((l, False))   # 안내문·보기 모두 그대로 표시
+        return presented, choices
+
+    # 글자 표기는 없지만 워드에서 '자동 번호 목록'으로 서식이 지정된 줄이 있으면
+    # 그 줄들만 선지로 본다. (그림 설명·안내문 같은 일반 문단이 선지로 섞이는 것을 방지)
+    if any(is_list for _t, is_list in items):
+        for txt, is_list in items:
+            if is_list:
+                choices.append(_strip_marker(txt))
+            else:
+                presented.append((txt, False))   # 안내문·보기 모두 그대로 표시
         return presented, choices
 
     # 표기가 전혀 없는 경우 ('모두 고른 것' 조합형 등)
-    others_exist = any(
-        (not _is_bogi_item(l) and not _is_bogi_header(l)) for l in lines
-    )
+    #  - 괄호 안내문은 선지 후보에서 제외한다.
+    #  - 이미 자기 라벨(가./ㄱ.)을 가진 보기 항목은 선지로 번호를 다시 매기지 않고
+    #    원래 라벨 그대로 보여준다. (선지 개수로 추측하지 않으므로 선지가 5개를
+    #    넘는 문제에서도 잘못 분류되지 않는다)
     for l in lines:
-        if others_exist and (_is_bogi_item(l) or _is_bogi_header(l)):
-            presented.append((l, True))          # 조합 선지가 따로 있으니 이건 보기
+        if _is_annotation(l):
+            presented.append((l, False))
+        elif _is_bogi_item(l) or _is_bogi_header(l):
+            presented.append((l, False))
         else:
             choices.append(_strip_marker(l))
     return presented, choices
 
 
+def _iter_body_paragraphs(doc):
+    """문서 본문의 모든 문단을 '문서에 보이는 순서'대로 반환.
+
+    python-docx 의 doc.paragraphs 는 최상위 문단만 준다.
+    표(table) 셀 안이나 텍스트 상자(text box) 안의 문단은 빠지므로,
+    본문 XML에서 w:p 를 직접 훑어 누락을 막는다.
+    (mc:Fallback 안의 문단은 mc:Choice 와 중복되므로 건너뛴다)
+    """
+    from docx.oxml.ns import qn
+    from docx.text.paragraph import Paragraph
+
+    body = doc.element.body
+    p_tag = qn("w:p")
+    # mc(markup compatibility) 는 python-docx 기본 네임스페이스 맵에 없어 직접 지정
+    fallback_tag = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+
+    # mc:Fallback 하위의 문단은 제외 (같은 내용이 mc:Choice 에도 있어 중복됨)
+    skip = set()
+    for fb in body.iter(fallback_tag):
+        for p in fb.iter(p_tag):
+            skip.add(id(p))
+
+    for p in body.iter(p_tag):
+        if id(p) in skip:
+            continue
+        yield Paragraph(p, doc)
+
+
 def _para_images(para):
-    """문단(paragraph)에 포함된 이미지 blob 리스트를 반환."""
+    """문단(paragraph)에 포함된 이미지 blob 리스트를 반환.
+
+    DrawingML(a:blip) 뿐 아니라 구형 VML(v:imagedata) 이미지도 함께 처리한다.
+    """
     from docx.oxml.ns import qn
     imgs = []
-    for blip in para._element.findall(".//" + qn("a:blip")):
-        rid = blip.get(qn("r:embed")) or blip.get(qn("r:link"))
-        if not rid:
-            continue
+    seen = set()
+
+    def _add(rid):
+        if not rid or rid in seen:
+            return
+        seen.add(rid)
         try:
             part = para.part.related_parts[rid]
             imgs.append(part.blob)
         except Exception:
             pass
+
+    # 최신 형식 (DrawingML) — inline / anchor(떠 있는 그림) 모두 포함
+    for blip in para._element.findall(".//" + qn("a:blip")):
+        _add(blip.get(qn("r:embed")) or blip.get(qn("r:link")))
+
+    # 구형 형식 (VML) — 예전 워드에서 삽입된 그림
+    # v(VML) 네임스페이스는 python-docx 기본 맵에 없어 직접 지정한다
+    vml_tag = "{urn:schemas-microsoft-com:vml}imagedata"
+    for vml in para._element.findall(".//" + vml_tag):
+        _add(vml.get(qn("r:id")) or vml.get(qn("r:href")))
+
     return imgs
+
+
+def _is_list_paragraph(para):
+    """워드의 '자동 번호/글머리 기호 목록'으로 서식이 지정된 문단인지 판별.
+
+    선지를 자동 번호 목록으로 만든 경우 번호가 텍스트에 없어서,
+    그림 설명 같은 일반 문단과 구분되지 않는다. 서식(w:numPr)을 직접 확인한다.
+    """
+    from docx.oxml.ns import qn
+    ppr = para._element.find(qn("w:pPr"))
+    if ppr is not None and ppr.find(qn("w:numPr")) is not None:
+        return True
+    # 문단에 직접 지정되지 않고 스타일에 정의된 경우(예: List Number 스타일)
+    try:
+        style = para.style
+        while style is not None:
+            spr = style.element.find(qn("w:pPr"))
+            if spr is not None and spr.find(qn("w:numPr")) is not None:
+                return True
+            style = style.base_style
+    except Exception:
+        pass
+    return False
 
 
 def _para_lines(para):
@@ -439,11 +542,13 @@ def parse_docx_questions(docx_path):
         expect = 1
         max_num = max(max_num, num)
 
-    for para in d.paragraphs:
+    for para in _iter_body_paragraphs(d):
         lines = _para_lines(para)
         imgs = _para_images(para)
         if not any(lines) and not imgs:
             continue
+        # 워드 자동 번호 목록으로 서식이 지정된 문단인지 (선지 판별의 강력한 단서)
+        is_list = _is_list_paragraph(para)
         for ln in lines:
             if not ln:
                 continue
@@ -452,18 +557,18 @@ def parse_docx_questions(docx_path):
                 num = int(nm.group(1))
                 if cur is not None and num == expect and expect <= _MAX_CHOICES:
                     # 지문 뒤에서 1,2,3.. 로 이어지는 숫자 -> 선지(본문에 원문 그대로 보관)
-                    cur["_body"].append(ln)
+                    cur["_body"].append((ln, is_list))
                     expect += 1
                 elif (cur is None or num > max_num) and 1 <= num <= 400:
                     # 문제 번호는 문서 내에서 커지기만 한다 -> 그럴 때만 새 문제
                     start_question(num, nm.group(2).strip())
                 elif cur is not None:
-                    cur["_body"].append(ln)
+                    cur["_body"].append((ln, is_list))
                 continue
             # 숫자 없는 줄
             if cur is None:
                 continue
-            cur["_body"].append(ln)
+            cur["_body"].append((ln, is_list))
         if cur is not None and imgs:
             cur["images"].extend(imgs)
 
@@ -504,10 +609,6 @@ def render_docx_questions_to_pages(qdatas, header):
         "choice", fontName=font, fontSize=11, leading=17.5,
         leftIndent=36, firstLineIndent=-16, spaceAfter=2,
         textColor="#2B3440", **CJK)
-    bogi_style = ParagraphStyle(
-        "bogi", fontName=font, fontSize=10.5, leading=17, leftIndent=14, rightIndent=8,
-        textColor="#2B3440", backColor="#F2F5F9", borderColor="#DDE4EC", borderWidth=0.5,
-        borderPadding=7, spaceBefore=4, spaceAfter=7, **CJK)
     note_style = ParagraphStyle(
         "note", fontName=font, fontSize=11, leading=18, spaceBefore=1, spaceAfter=4,
         textColor="#1A2028", **CJK)
@@ -558,23 +659,11 @@ def render_docx_questions_to_pages(qdatas, header):
                 block.append(Image(BytesIO(blob), width=w, height=h))
             except Exception:
                 pass
-        # 제시문(보기·안내문 등) — 선지 위에 그대로 표시(번호 없음)
-        # 연속된 보기 항목은 하나의 회색 상자로 묶고, 그 외 안내문은 일반 문단으로.
-        presented = qd.get("presented", [])
-        bogi_buf = []
-
-        def flush_bogi():
-            if bogi_buf:
-                block.append(Paragraph("<br/>".join(esc(b) for b in bogi_buf), bogi_style))
-                bogi_buf.clear()
-
-        for text, is_bogi in presented:
-            if is_bogi:
-                bogi_buf.append(text)
-            else:
-                flush_bogi()
-                block.append(Paragraph(esc(text), note_style))
-        flush_bogi()
+        # 제시문(보기·안내문 등) — 선지 위에 번호 없이 그대로 표시.
+        # 별도 상자로 감싸지 않는다. (선지인지 보기인지 추측해서 상자로 묶으면
+        #  선지가 많은 문제에서 잘못 분류될 수 있어, 원문 그대로 두는 편이 안전하다)
+        for text, _is_bogi in qd.get("presented", []):
+            block.append(Paragraph(esc(text), note_style))
 
         if qd.get("choices"):
             block.append(Spacer(1, 3))
