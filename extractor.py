@@ -259,12 +259,17 @@ def find_source(folder, year, subject, term, kind):
 # ---------------------------------------------------------------------------
 # 풀이 PDF: 문제별 페이지 블록 매핑
 # ---------------------------------------------------------------------------
-# 풀이 슬라이드의 "(1/3)" 같은 진행 표기
+# 풀이 슬라이드의 "(1/3)" 같은 진행 표기 (있으면 쓰고, 없어도 동작한다)
 _SLIDE_MARK_RE = re.compile(r"\(\s*(\d{1,2})\s*/\s*(\d{1,2})\s*\)")
-# 슬라이드 안의 문제 번호 ("48. influenza virus에 대한 ...")
-_SOL_QNUM_RE = re.compile(r"(?:^|\n)\s*(\d{1,3})\s*[.)]\s*(\S[^\n]{5,})")
+# 슬라이드 상단의 문제 번호. 글머리 기호가 앞에 붙거나 마침표가 없는 경우도 잡는다.
+#   "48. influenza virus..." / "75 그림과관련된질병..." / "• 76 사람면역결핍..."
+_SOL_QNUM_RE = re.compile(
+    r"(?:^|\n)\s*(?:[•·\-\*\u2022]\s*)?(\d{1,3})\s*[.)]?\s*(\S[^\n]{3,})")
 # "정답: 2번" 처럼 해설 슬라이드임을 알려주는 머리글
-_ANSWER_HEAD_RE = re.compile(r"^\s*(정답|답)\s*[:：）)]?\s*\d|^\s*답\s*[:：]")
+_ANSWER_HEAD_RE = re.compile(r"^\s*(정답|답)\s*[:：）)]?")
+# 문제 번호는 슬라이드 상단에 나온다. 아래쪽의 "77. 인체감염진균"(강의록 참조)이
+# 문제 번호로 오인되지 않도록 탐색 범위를 앞부분 몇 줄로 제한한다.
+_SOL_HEAD_LINES = 4
 
 
 def _solution_page_texts(pdf_path):
@@ -286,31 +291,40 @@ def map_solution_blocks(pdf_path):
     """풀이 PDF에서 {문제번호: (start_page, end_page_exclusive)} 반환.
 
     한 문제는 보통 '문제 / 정답·해설 / 강의록' 슬라이드로 이어진다.
-    예전에는 '(1/' 표기만으로 블록을 끊었는데, 실제 족보에는
-      - 해설 슬라이드에도 '(1/3)' 이 잘못 붙어 있거나
-      - 블록의 모든 슬라이드에 문제 지문과 '(1/3)' 을 반복해 넣은
-    경우가 많아 블록이 1장으로 끊기면서 해설이 통째로 빠졌다.
-    그래서 '문제 번호가 바뀌는 지점'을 블록 경계로 삼는다.
+    족보 파일이 규칙을 잘 지키지 않으므로 여러 단서를 함께 본다.
+
+      - (1/3) 표기가 있으면 활용하되, **없어도 동작한다.**
+        (표기가 전혀 없는 족보에서 문제가 하나도 안 잡히는 문제가 있었다)
+      - 표기가 (2/3) 처럼 첫 장이 아니면 이어지는 슬라이드로 본다.
+      - '정답'으로 시작하는 슬라이드는 해설이므로 블록 시작이 아니다.
+      - 문제 번호는 '앞 문제보다 큰 번호'만 인정한다.
+        이렇게 하면 선지 번호(1~5)나 반복 표시된 같은 번호에 속지 않는다.
     """
     reader = PdfReader(pdf_path)
     texts = _solution_page_texts(pdf_path)
     n = len(texts)
 
     starts = []
-    last_q = None
+    last_q = 0
     for i, t in enumerate(texts):
         mk = _SLIDE_MARK_RE.search(t)
         k = int(mk.group(1)) if mk else None
-        mq = _SOL_QNUM_RE.search(t)
-        q = int(mq.group(1)) if mq else None
-        is_answer_slide = bool(_ANSWER_HEAD_RE.match(t.strip()))
-        # 문제 슬라이드의 조건: 첫 장 표기 + 문제 번호 존재 + 해설 머리글 아님
-        # + 앞 블록과 다른 번호 (같은 번호가 이어지면 같은 문제의 연속 슬라이드)
-        if k == 1 and q is not None and not is_answer_slide and q != last_q:
-            starts.append((i, q))
-            last_q = q
-        elif q is not None and q == last_q:
+        if k is not None and k > 1:
+            continue                      # 이어지는 슬라이드
+        if _ANSWER_HEAD_RE.match(t.strip()):
+            continue                      # 해설 슬라이드
+        head_lines = [ln for ln in t.splitlines() if ln.strip()][:_SOL_HEAD_LINES]
+        head = "\n" + "\n".join(head_lines)
+        pick = None
+        for m in _SOL_QNUM_RE.finditer(head):
+            num = int(m.group(1))
+            if last_q < num <= 400:
+                pick = num
+                break
+        if pick is None:
             continue
+        starts.append((i, pick))
+        last_q = pick
 
     blocks = {}
     for idx, (pg, num) in enumerate(starts):
