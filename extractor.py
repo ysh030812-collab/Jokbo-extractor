@@ -259,39 +259,63 @@ def find_source(folder, year, subject, term, kind):
 # ---------------------------------------------------------------------------
 # 풀이 PDF: 문제별 페이지 블록 매핑
 # ---------------------------------------------------------------------------
-def _parse_qnum(text):
-    for line in text.split("\n"):
-        line = line.strip()
-        m = re.match(r"(\d{1,3})\s*[.．]", line)
-        if m:
-            v = int(m.group(1))
-            if 1 <= v <= 400:
-                return v
-    return None
+# 풀이 슬라이드의 "(1/3)" 같은 진행 표기
+_SLIDE_MARK_RE = re.compile(r"\(\s*(\d{1,2})\s*/\s*(\d{1,2})\s*\)")
+# 슬라이드 안의 문제 번호 ("48. influenza virus에 대한 ...")
+_SOL_QNUM_RE = re.compile(r"(?:^|\n)\s*(\d{1,3})\s*[.)]\s*(\S[^\n]{5,})")
+# "정답: 2번" 처럼 해설 슬라이드임을 알려주는 머리글
+_ANSWER_HEAD_RE = re.compile(r"^\s*(정답|답)\s*[:：）)]?\s*\d|^\s*답\s*[:：]")
+
+
+def _solution_page_texts(pdf_path):
+    """풀이 PDF의 페이지별 텍스트. PyMuPDF 가 있으면 그쪽을 쓴다.
+
+    pypdf 의 추출은 줄바꿈이 뭉개져 문제 번호를 놓치는 경우가 많아
+    (같은 파일에서 78문제 -> 64문제로 감소) PyMuPDF 를 우선 사용한다.
+    """
+    try:
+        import fitz   # PyMuPDF
+        with fitz.open(pdf_path) as doc:
+            return [pg.get_text() or "" for pg in doc]
+    except Exception:
+        reader = PdfReader(pdf_path)
+        return [(pg.extract_text() or "") for pg in reader.pages]
 
 
 def map_solution_blocks(pdf_path):
     """풀이 PDF에서 {문제번호: (start_page, end_page_exclusive)} 반환.
-    각 문제는 '(1/k) ... (k/k)' 슬라이드로 구성되므로 '(1/' 마커로 블록을 구분한다.
-    번호는 페이지의 'N.' 패턴으로 파싱, 실패 시 직전 번호+1로 보정한다."""
+
+    한 문제는 보통 '문제 / 정답·해설 / 강의록' 슬라이드로 이어진다.
+    예전에는 '(1/' 표기만으로 블록을 끊었는데, 실제 족보에는
+      - 해설 슬라이드에도 '(1/3)' 이 잘못 붙어 있거나
+      - 블록의 모든 슬라이드에 문제 지문과 '(1/3)' 을 반복해 넣은
+    경우가 많아 블록이 1장으로 끊기면서 해설이 통째로 빠졌다.
+    그래서 '문제 번호가 바뀌는 지점'을 블록 경계로 삼는다.
+    """
     reader = PdfReader(pdf_path)
-    n = len(reader.pages)
-    start_pages = []
-    for i in range(n):
-        t = reader.pages[i].extract_text() or ""
-        if "(1/" in t or "( 1/" in t:
-            start_pages.append([i, _parse_qnum(t)])
+    texts = _solution_page_texts(pdf_path)
+    n = len(texts)
+
+    starts = []
+    last_q = None
+    for i, t in enumerate(texts):
+        mk = _SLIDE_MARK_RE.search(t)
+        k = int(mk.group(1)) if mk else None
+        mq = _SOL_QNUM_RE.search(t)
+        q = int(mq.group(1)) if mq else None
+        is_answer_slide = bool(_ANSWER_HEAD_RE.match(t.strip()))
+        # 문제 슬라이드의 조건: 첫 장 표기 + 문제 번호 존재 + 해설 머리글 아님
+        # + 앞 블록과 다른 번호 (같은 번호가 이어지면 같은 문제의 연속 슬라이드)
+        if k == 1 and q is not None and not is_answer_slide and q != last_q:
+            starts.append((i, q))
+            last_q = q
+        elif q is not None and q == last_q:
+            continue
 
     blocks = {}
-    last = None
-    for idx, (pg, num) in enumerate(start_pages):
-        end = start_pages[idx + 1][0] if idx + 1 < len(start_pages) else n
-        if num is None:
-            num = (last + 1) if last is not None else None
-        if num is None:
-            continue
+    for idx, (pg, num) in enumerate(starts):
+        end = starts[idx + 1][0] if idx + 1 < len(starts) else n
         blocks.setdefault(num, (pg, end))
-        last = num
     return blocks, reader
 
 
@@ -418,32 +442,85 @@ def _classify_body(lines):
     return presented, choices
 
 
-def _iter_body_paragraphs(doc):
-    """문서 본문의 모든 문단을 '문서에 보이는 순서'대로 반환.
+def _iter_body_blocks(doc):
+    """본문을 '문단' 또는 '표' 단위로 문서에 보이는 순서대로 반환.
 
-    python-docx 의 doc.paragraphs 는 최상위 문단만 준다.
-    표(table) 셀 안이나 텍스트 상자(text box) 안의 문단은 빠지므로,
-    본문 XML에서 w:p 를 직접 훑어 누락을 막는다.
-    (mc:Fallback 안의 문단은 mc:Choice 와 중복되므로 건너뛴다)
+    ("p", Paragraph) 또는 ("tbl", Table) 튜플을 내놓는다.
+
+    python-docx 의 doc.paragraphs 는 최상위 문단만 주므로 표·텍스트 상자 안의
+    내용이 누락된다. 반대로 모든 w:p 를 평평하게 훑으면 표 구조가 사라져
+    나란히 배치돼야 할 칸이 위아래로 쌓인다. 그래서 표는 표로 따로 넘긴다.
     """
     from docx.oxml.ns import qn
     from docx.text.paragraph import Paragraph
+    from docx.table import Table
 
     body = doc.element.body
     p_tag = qn("w:p")
+    tbl_tag = qn("w:tbl")
     # mc(markup compatibility) 는 python-docx 기본 네임스페이스 맵에 없어 직접 지정
     fallback_tag = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
 
-    # mc:Fallback 하위의 문단은 제외 (같은 내용이 mc:Choice 에도 있어 중복됨)
-    skip = set()
-    for fb in body.iter(fallback_tag):
-        for p in fb.iter(p_tag):
-            skip.add(id(p))
+    def _ancestor_tags(el):
+        """el 의 조상 태그들을 body 까지 거슬러 올라가며 내놓는다.
 
-    for p in body.iter(p_tag):
-        if id(p) in skip:
+        lxml 은 같은 XML 요소에 대해 매번 새 파이썬 객체를 만들 수 있어
+        id() 비교가 어긋난다. 그래서 부모 연결을 직접 확인한다.
+        """
+        cur_el = el.getparent()
+        while cur_el is not None and cur_el is not body:
+            yield cur_el.tag
+            cur_el = cur_el.getparent()
+
+    for el in body.iter(p_tag, tbl_tag):
+        anc = set(_ancestor_tags(el))
+        # mc:Fallback 하위 내용은 mc:Choice 와 중복되므로 제외
+        if fallback_tag in anc:
             continue
-        yield Paragraph(p, doc)
+        # 표 안의 문단·중첩 표는 표 블록에서 함께 처리하므로 개별로 내보내지 않는다
+        if tbl_tag in anc:
+            continue
+        if el.tag == tbl_tag:
+            tbl = Table(el, doc)
+            # 칸이 하나뿐인 표는 사실상 '테두리 있는 문단'이므로 일반 흐름으로 처리
+            try:
+                single = len(tbl.rows) == 1 and len(tbl.rows[0].cells) == 1
+            except Exception:
+                single = False
+            if single:
+                for cp in tbl.rows[0].cells[0].paragraphs:
+                    yield "p", cp
+            else:
+                yield "tbl", tbl
+        else:
+            yield "p", Paragraph(el, doc)
+
+
+def _table_spec(tbl):
+    """표를 렌더링용 자료구조로 변환.
+
+    반환: [[{"text": 셀텍스트, "images": [blob, ...]}, ...], ...]  (행 x 열)
+    """
+    rows = []
+    for r in tbl.rows:
+        cells = []
+        seen = set()
+        for c in r.cells:
+            # 병합된 칸은 같은 객체가 반복 등장하므로 한 번만 담는다
+            key = id(c._tc)
+            if key in seen:
+                continue
+            seen.add(key)
+            texts, imgs = [], []
+            for p in c.paragraphs:
+                t = p.text.strip()
+                if t:
+                    texts.append(t)
+                imgs.extend(_para_images(p))
+            cells.append({"text": "\n".join(texts), "images": imgs})
+        if cells:
+            rows.append(cells)
+    return rows
 
 
 def _para_images(para):
@@ -519,6 +596,71 @@ def _para_lines(para):
     return [ln.strip() for ln in text.split("\n")]
 
 
+def compose_slides_grid(src_pages, label, per_page=4):
+    """풀이 슬라이드 여러 장을 한 페이지에 모아 배치한 페이지들을 반환.
+
+    한 문제(문제+해설)를 한 페이지에서 보기 위한 기능이다.
+    - A4 가로 방향에 2x2로 최대 4장 배치
+    - 슬라이드가 4장을 넘으면 4장씩 나눠 여러 페이지로 (5~8장 -> 2페이지)
+    - 왼쪽 위에 '2023 기말 48번' 같은 라벨을 얹는다
+    """
+    from pypdf import PageObject, Transformation
+
+    W, H = 841.89, 595.28          # A4 가로
+    mx, my = 16, 14                # 좌우 / 위아래 여백
+    top = 16                       # 라벨 자리
+    gap = 8
+    cols, rows = 2, 2
+    cw = (W - 2 * mx - (cols - 1) * gap) / cols
+    ch = (H - 2 * my - top - (rows - 1) * gap) / rows
+
+    out = []
+    for chunk_i in range(0, len(src_pages), per_page):
+        chunk = src_pages[chunk_i:chunk_i + per_page]
+        page = PageObject.create_blank_page(width=W, height=H)
+        for i, src in enumerate(chunk):
+            try:
+                box = src.mediabox
+                x0, y0 = float(box.left), float(box.bottom)
+                sw = float(box.width) or 1.0
+                sh = float(box.height) or 1.0
+                s = min(cw / sw, ch / sh)
+                col, row = i % cols, i // cols
+                # PDF 좌표계는 왼쪽 아래가 원점
+                cell_x = mx + col * (cw + gap)
+                cell_y = H - my - top - (row + 1) * ch - row * gap
+                tx = cell_x + (cw - sw * s) / 2 - x0 * s
+                ty = cell_y + (ch - sh * s) / 2 - y0 * s
+                page.merge_transformed_page(
+                    src, Transformation().scale(s).translate(tx, ty))
+            except Exception:
+                continue
+        if label:
+            try:
+                page.merge_page(_make_label_page(label, W, H, mx, my))
+            except Exception:
+                pass
+        out.append(page)
+    return out
+
+
+def _make_label_page(text, W, H, mx, my):
+    """페이지 왼쪽 위에 얹을 라벨(문제 번호) 페이지를 만든다."""
+    from reportlab.pdfgen import canvas
+    _font, font_bold = _ensure_fonts()
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=(W, H))
+    c.setFillColorRGB(0.18, 0.42, 0.64)
+    c.setFont(font_bold, 9)
+    c.drawString(mx, H - my - 10, text)
+    c.setStrokeColorRGB(0.87, 0.90, 0.94)
+    c.setLineWidth(0.4)
+    c.line(mx, H - my - 14, W - mx, H - my - 14)
+    c.save()
+    buf.seek(0)
+    return PdfReader(buf).pages[0]
+
+
 def parse_docx_questions(docx_path):
     """DOCX를 파싱해 {문제번호: {'num','stem','choices':[...],'images':[blob,...]}} 반환.
 
@@ -537,12 +679,21 @@ def parse_docx_questions(docx_path):
 
     def start_question(num, stem):
         nonlocal cur, expect, max_num
-        cur = {"num": num, "stem": stem.strip(), "_body": [], "images": []}
+        cur = {"num": num, "stem": stem.strip(), "_body": [], "images": [],
+               "tables": []}
         questions[num] = cur
         expect = 1
         max_num = max(max_num, num)
 
-    for para in _iter_body_paragraphs(d):
+    for kind, obj in _iter_body_blocks(d):
+        if kind == "tbl":
+            # 표는 구조를 유지해 현재 문제에 붙인다
+            if cur is not None:
+                spec = _table_spec(obj)
+                if spec:
+                    cur["tables"].append(spec)
+            continue
+        para = obj
         lines = _para_lines(para)
         imgs = _para_images(para)
         if not any(lines) and not imgs:
@@ -576,6 +727,66 @@ def parse_docx_questions(docx_path):
     for q in questions.values():
         q["presented"], q["choices"] = _classify_body(q.pop("_body"))
     return questions
+
+
+def _build_table_flowable(spec, avail_w, cell_style, esc):
+    """표 자료구조를 reportlab Table flowable 로 변환.
+
+    - 칸 안의 그림도 그대로 넣는다 (그림이 선지인 문제가 있음)
+    - 열 너비는 사용 가능한 폭을 균등 분할
+    - 글자가 전혀 없고 그림만 있는 표는 테두리를 그리지 않는다
+      (그림을 나란히 놓기 위한 '배치용 표'인 경우가 많음)
+    """
+    from reportlab.platypus import Table as RLTable, TableStyle, Paragraph, Image
+    from reportlab.lib.utils import ImageReader
+    from reportlab.lib import colors
+
+    if not spec:
+        return None
+    ncols = max(len(r) for r in spec)
+    if ncols == 0:
+        return None
+    col_w = avail_w / ncols
+    has_text = any(c.get("text") for r in spec for c in r)
+
+    data = []
+    for row in spec:
+        out = []
+        for c in row:
+            items = []
+            if c.get("text"):
+                items.append(Paragraph(esc(c["text"]).replace("\n", "<br/>"), cell_style))
+            for blob in c.get("images", []):
+                try:
+                    ir = ImageReader(BytesIO(blob))
+                    iw, ih = ir.getSize()
+                    w = min(col_w - 10, iw * 0.75)
+                    h = w * ih / iw
+                    items.append(Image(BytesIO(blob), width=w, height=h))
+                except Exception:
+                    pass
+            if not items:
+                items = [""]
+            out.append(items if len(items) > 1 else items[0])
+        # 행마다 열 수가 다를 수 있어 빈 칸으로 채운다
+        out += [""] * (ncols - len(out))
+        data.append(out)
+
+    tbl = RLTable(data, colWidths=[col_w] * ncols, hAlign="LEFT")
+    style = [
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+    if has_text:
+        style += [
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#C9D3DE")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F5F9")),
+        ]
+    tbl.setStyle(TableStyle(style))
+    return tbl
 
 
 def render_docx_questions_to_pages(qdatas, header):
@@ -659,6 +870,14 @@ def render_docx_questions_to_pages(qdatas, header):
                 block.append(Image(BytesIO(blob), width=w, height=h))
             except Exception:
                 pass
+        # 표 — 원본의 행/열 구조를 유지해 그린다
+        for spec in qd.get("tables", []):
+            flow = _build_table_flowable(spec, avail_w, note_style, esc)
+            if flow is not None:
+                block.append(Spacer(1, 5))
+                block.append(flow)
+                block.append(Spacer(1, 4))
+
         # 제시문(보기·안내문 등) — 선지 위에 번호 없이 그대로 표시.
         # 별도 상자로 감싸지 않는다. (선지인지 보기인지 추측해서 상자로 묶으면
         #  선지가 많은 문제에서 잘못 분류될 수 있어, 원문 그대로 두는 편이 안전하다)
@@ -745,11 +964,15 @@ def build_pdf(folder, subject, rows, out_path, log=print):
             if q in blocks:
                 flush_pending()   # 순서 유지를 위해 대기 중 docx 먼저 출력
                 s, e = blocks[q]
-                for p in range(s, e):
-                    writer.add_page(reader.pages[p])
+                slides = [reader.pages[p] for p in range(s, e)]
+                # 문제+해설을 한 페이지에 모아 배치 (4장 초과면 4장씩 나눠 여러 페이지)
+                composed = compose_slides_grid(
+                    slides, f"{year} {subject} {term}  {q}번", per_page=4)
+                for cp in composed:
+                    writer.add_page(cp)
                 stats["added"] += 1
                 placed = True
-                log(f"  ✓ {year} {term} {q}번 (풀이 {e - s}p)")
+                log(f"  ✓ {year} {term} {q}번 (풀이 {len(slides)}장 → {len(composed)}p)")
 
         # 2순위: 시험 DOCX에서 파싱해 재렌더링
         if not placed:
