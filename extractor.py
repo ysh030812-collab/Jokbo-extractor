@@ -214,13 +214,13 @@ def scan_library(folder):
         if mm:
             subject = mm.group(1).strip()
 
-        key = (year, term)
+        # 과목까지 키에 넣는다. (연도, 학기)만으로 묶으면 같은 연도·학기의 다른
+        # 과목 파일이 서로 덮어써서, 표시된 과목명과 실제 파일이 어긋난다.
+        key = (year, term, subject)
         rec = sets.setdefault(key, {
             "year": year, "term": term, "subject": subject,
             "solution": None, "docx": None,
         })
-        if not rec["subject"] and subject:
-            rec["subject"] = subject
 
         if ext == ".pdf" and "풀이" in name:
             rec["solution"] = name
@@ -228,7 +228,8 @@ def scan_library(folder):
             rec["docx"] = name
 
     return sorted(sets.values(),
-                  key=lambda r: (-r["year"], _TERM_ORDER.get(r["term"], 9)))
+                  key=lambda r: (-r["year"], _TERM_ORDER.get(r["term"], 9),
+                                 r["subject"]))
 
 
 def find_source(folder, year, subject, term, kind):
@@ -239,7 +240,9 @@ def find_source(folder, year, subject, term, kind):
             return exact
         for p in glob.glob(os.path.join(folder, "*.pdf")):
             b = os.path.basename(p)
-            if str(year) in b and term in b and "풀이" in b:
+            # 과목까지 확인한다. 빠뜨리면 요청한 과목이 없을 때 다른 과목 파일을
+            # 조용히 반환해 엉뚱한 문제가 결과에 섞인다.
+            if str(year) in b and term in b and "풀이" in b and subject in b:
                 return p
         return None
     else:  # 문제 docx
@@ -251,7 +254,7 @@ def find_source(folder, year, subject, term, kind):
             b = os.path.basename(p)
             if b.startswith("~$"):
                 continue
-            if str(year) in b and term in b and "풀이" not in b:
+            if str(year) in b and term in b and "풀이" not in b and subject in b:
                 return p
         return None
 
@@ -262,9 +265,18 @@ def find_source(folder, year, subject, term, kind):
 # 풀이 슬라이드의 "(1/3)" 같은 진행 표기 (있으면 쓰고, 없어도 동작한다)
 _SLIDE_MARK_RE = re.compile(r"\(\s*(\d{1,2})\s*/\s*(\d{1,2})\s*\)")
 # 슬라이드 상단의 문제 번호. 글머리 기호가 앞에 붙거나 마침표가 없는 경우도 잡는다.
+#   숫자는 '온전한 수'여야 한다. (?<!\d)...(?!\d) 가 없으면 표지의 "2023" 에서
+#   앞 세 자리 "202" 를 문제 번호로 잘라 읽고, last_q 가 202 로 올라가
+#   이후의 진짜 문제 번호가 전부 무시된다 (풀이 PDF 전체가 한 블록이 됨).
 #   "48. influenza virus..." / "75 그림과관련된질병..." / "• 76 사람면역결핍..."
+#   구분자('.' 또는 ')')를 요구한다. 없으면 표지의 "35기 족보"가 35번으로
+#   잡히고, last_q 가 35 로 올라가 1~34번이 전부 사라진다.
 _SOL_QNUM_RE = re.compile(
-    r"(?:^|\n)\s*(?:[•·\-\*\u2022]\s*)?(\d{1,3})\s*[.)]?\s*(\S[^\n]{3,})")
+    r"(?:^|\n)\s*(?:[•·\-\*\u2022]\s*)?(?<!\d)(\d{1,3})(?!\d)\s*[.)]\s*(\S[^\n]{3,})")
+#   구분자를 아예 쓰지 않는 족보("75 그림과관련된질병")를 위한 완화판.
+#   strict 패턴으로 거의 못 찾았을 때만 대체로 쓴다.
+_SOL_QNUM_RE_LOOSE = re.compile(
+    r"(?:^|\n)\s*(?:[•·\-\*\u2022]\s*)?(?<!\d)(\d{1,3})(?!\d)\s*[.)]?\s*(\S[^\n]{3,})")
 # "정답: 2번" 처럼 해설 슬라이드임을 알려주는 머리글
 _ANSWER_HEAD_RE = re.compile(r"^\s*(정답|답)\s*[:：）)]?")
 # 문제 번호는 슬라이드 상단에 나온다. 아래쪽의 "77. 인체감염진균"(강의록 참조)이
@@ -279,12 +291,41 @@ def _solution_page_texts(pdf_path):
     (같은 파일에서 78문제 -> 64문제로 감소) PyMuPDF 를 우선 사용한다.
     """
     try:
-        import fitz   # PyMuPDF
+        try:
+            import pymupdf as fitz   # PyMuPDF (신형 이름)
+        except ImportError:
+            import fitz              # 구버전 호환
         with fitz.open(pdf_path) as doc:
             return [pg.get_text() or "" for pg in doc]
     except Exception:
         reader = PdfReader(pdf_path)
         return [(pg.extract_text() or "") for pg in reader.pages]
+
+
+def _scan_solution_starts(texts, qnum_re):
+    """페이지 텍스트 목록에서 [(페이지 index, 문제번호), ...] 를 찾는다."""
+    starts = []
+    last_q = 0
+    for i, t in enumerate(texts):
+        mk = _SLIDE_MARK_RE.search(t)
+        k = int(mk.group(1)) if mk else None
+        if k is not None and k > 1:
+            continue                      # 이어지는 슬라이드
+        if _ANSWER_HEAD_RE.match(t.strip()):
+            continue                      # 해설 슬라이드
+        head_lines = [ln for ln in t.splitlines() if ln.strip()][:_SOL_HEAD_LINES]
+        head = "\n" + "\n".join(head_lines)
+        pick = None
+        for m in qnum_re.finditer(head):
+            num = int(m.group(1))
+            if last_q < num <= 400:
+                pick = num
+                break
+        if pick is None:
+            continue
+        starts.append((i, pick))
+        last_q = pick
+    return starts
 
 
 def map_solution_blocks(pdf_path):
@@ -304,27 +345,12 @@ def map_solution_blocks(pdf_path):
     texts = _solution_page_texts(pdf_path)
     n = len(texts)
 
-    starts = []
-    last_q = 0
-    for i, t in enumerate(texts):
-        mk = _SLIDE_MARK_RE.search(t)
-        k = int(mk.group(1)) if mk else None
-        if k is not None and k > 1:
-            continue                      # 이어지는 슬라이드
-        if _ANSWER_HEAD_RE.match(t.strip()):
-            continue                      # 해설 슬라이드
-        head_lines = [ln for ln in t.splitlines() if ln.strip()][:_SOL_HEAD_LINES]
-        head = "\n" + "\n".join(head_lines)
-        pick = None
-        for m in _SOL_QNUM_RE.finditer(head):
-            num = int(m.group(1))
-            if last_q < num <= 400:
-                pick = num
-                break
-        if pick is None:
-            continue
-        starts.append((i, pick))
-        last_q = pick
+    starts = _scan_solution_starts(texts, _SOL_QNUM_RE)
+    if len(starts) < 2:
+        # 구분자 없는 족보일 수 있다. 완화판으로 다시 훑어 더 많이 잡히면 그쪽을 쓴다.
+        loose = _scan_solution_starts(texts, _SOL_QNUM_RE_LOOSE)
+        if len(loose) > len(starts):
+            starts = loose
 
     blocks = {}
     for idx, (pg, num) in enumerate(starts):
@@ -598,14 +624,27 @@ def _para_lines(para):
     from docx.oxml.ns import qn
     t_tag, br_tag, cr_tag, tab_tag = (
         qn("w:t"), qn("w:br"), qn("w:cr"), qn("w:tab"))
+    # mc:Fallback 은 mc:Choice 와 같은 내용을 중복해 담고, w:txbxContent(텍스트
+    # 상자)는 _iter_body_blocks 가 별도 문단으로 따로 내보낸다. 두 갈래로 모두
+    # 내려가면 같은 문장이 2~3번 출력된다.
+    fallback_tag = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+    txbx_tag = qn("w:txbxContent")
     parts = []
-    for node in para._element.iter():
-        if node.tag == t_tag:
-            parts.append(node.text or "")
-        elif node.tag in (br_tag, cr_tag):
-            parts.append("\n")
-        elif node.tag == tab_tag:
-            parts.append(" ")
+
+    def walk(el):
+        for node in el:
+            tag = node.tag
+            if tag == fallback_tag or tag == txbx_tag:
+                continue
+            if tag == t_tag:
+                parts.append(node.text or "")
+            elif tag in (br_tag, cr_tag):
+                parts.append("\n")
+            elif tag == tab_tag:
+                parts.append(" ")
+            walk(node)
+
+    walk(para._element)
     text = "".join(parts)
     return [ln.strip() for ln in text.split("\n")]
 
@@ -947,6 +986,17 @@ def build_pdf(folder, subject, rows, out_path, log=print):
     stats = {"added": 0}
     cur_key = None    # (year, term)
     pending = []      # 현재 구간의 재렌더링 대기 docx 문제
+    pending_title = []   # 아직 내보내지 않은 표지 [(제목, 부제)]
+
+    def emit_title():
+        """표지는 그 구간에 실제로 들어갈 내용이 확인된 뒤에만 내보낸다.
+
+        구간 시작 시점에 미리 넣으면, 해당 연도의 파일이 없어 아무 문제도
+        추출되지 않았을 때 내용 없는 표지만 덩그러니 남는다.
+        """
+        if pending_title:
+            title, subtitle = pending_title.pop()
+            writer.add_page(make_title_page(title, subtitle))
 
     def flush_pending():
         if not pending:
@@ -954,6 +1004,7 @@ def build_pdf(folder, subject, rows, out_path, log=print):
         y, t = cur_key
         pages = render_docx_questions_to_pages(
             list(pending), f"{y} {subject} {t}")
+        emit_title()
         for p in pages:
             writer.add_page(p)
         stats["added"] += len(pending)
@@ -965,7 +1016,7 @@ def build_pdf(folder, subject, rows, out_path, log=print):
         if key != cur_key:
             flush_pending()
             cur_key = key
-            writer.add_page(make_title_page(f"{year}", f"{subject} {term}"))
+            pending_title[:] = [(f"{year}", f"{subject} {term}")]
         placed = False
 
         # 1순위: 풀이 PDF에서 (문제+해설) 블록 추출
@@ -977,6 +1028,7 @@ def build_pdf(folder, subject, rows, out_path, log=print):
             blocks, reader = sol_cache[key]
             if q in blocks:
                 flush_pending()   # 순서 유지를 위해 대기 중 docx 먼저 출력
+                emit_title()
                 s, e = blocks[q]
                 slides = [reader.pages[p] for p in range(s, e)]
                 # 문제+해설을 한 페이지에 모아 배치 (4장 초과면 4장씩 나눠 여러 페이지)

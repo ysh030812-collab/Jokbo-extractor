@@ -1,0 +1,16 @@
+# 족보 원본 — 저작권 자료이므로 저장소에 올리지 않는다
+자료/
+
+# 생성물
+bank.json
+settings.json
+*.pdf
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 워드 임시 파일
+~$*
