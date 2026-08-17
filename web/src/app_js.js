@@ -170,6 +170,9 @@ const setStep = (n, state) => {
 const err = (id, msg) => { $(id).textContent = msg || ""; };
 
 /* ── 1. 족보 등록 ─────────────────────────────────────────────── */
+/* 파서를 고쳐도 이미 등록된 파일은 예전 결과 그대로 남는다. 파일마다 어느 판으로
+   읽었는지 적어 두고, 낡았으면 다시 올리라고 알려 준다. 올리기 전에는 지우지 않는다. */
+const PARSER_VER = 2;
 /* 같은 문제가 풀이와 시험지에 다 있으면 풀이 슬라이드를 쓴다 (원본이 그대로 들어가므로) */
 function rebuild() {
   const best = new Map();
@@ -226,6 +229,10 @@ function renderBank() {
   fl.querySelectorAll(".x").forEach((b) => { b.onclick = () => delFile(b.dataset.f); });
   $("r1").hidden = false;
   setStep(1, "done"); setStep(2, "active");
+
+  const old = names.filter((n) => (RAW[n].v || 1) < PARSER_VER);
+  $("old").hidden = !old.length;
+  if (old.length) $("oldn").textContent = old.length + "개";
 }
 
 async function delFile(name) {
@@ -271,7 +278,7 @@ $("f1").onchange = async (ev) => {
           text: [q.stem, ...q.presented, ...q.choices.map((c, i) => `${i + 1}) ${c}`)].join("\n").slice(0, 1400),
         });
       }
-      RAW[name] = { kind: "doc", n: items.length, items };
+      RAW[name] = { kind: "doc", v: PARSER_VER, n: items.length, items };
       bar.style.width = (((fi + 1) / files.length) * 100).toFixed(1) + "%";
       continue;
     }
@@ -292,7 +299,7 @@ $("f1").onchange = async (ev) => {
       file: name, source: "solution", s: b.s, e: b.e,
       text: texts.slice(b.s, b.e).join("\n").trim().slice(0, 1400),
     }));
-    RAW[name] = { kind: "sol", n: items.length, items };
+    RAW[name] = { kind: "sol", v: PARSER_VER, n: items.length, items };
   }
   bar.style.width = "100%";
   rebuild();
