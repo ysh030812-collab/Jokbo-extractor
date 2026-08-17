@@ -222,8 +222,7 @@
 </div>
 
 
-<!-- pdf.js worker 를 인라인해 globalThis.pdfjsWorker 를 세팅한다.
-     그러면 pdf.js 가 blob: 워커를 만들지 않고 메인 스레드로 동작해 CSP 제약을 받지 않는다. -->
+<!-- pdf.js worker 인라인 → globalThis.pdfjsWorker 세팅 → 메인 스레드 동작 (CSP 안전) -->
 <script>/**
  * @licstart The following is the entire license notice for the
  * JavaScript code in this page
@@ -926,14 +925,22 @@ function decorDocx(q, data, pageNo, imgBoxes) {
     const cw = g.measureText(txt).width + 13;
     g.fillStyle = bg; roundRect(g, hx, 16, cw, 15, 4); g.fill();
     g.fillStyle = fg; g.fillText(txt, hx + 6.5, 23.5);
+    hx += cw + 7;
+    if (q.pages) {
+      const pg = `강의안 ${q.pages}쪽`;
+      const pw = g.measureText(pg).width + 13;
+      g.fillStyle = "#E8F2FE"; roundRect(g, hx, 16, pw, 15, 4); g.fill();
+      g.fillStyle = "#1B64DA"; g.fillText(pg, hx + 6.5, 23.5);
+    }
     g.font = `600 10.5px ${FONT}`; g.fillStyle = MUTE; g.textAlign = "right";
     g.fillText("시험지 재구성", PW - 18, 23); g.textAlign = "left";
 
     g.textBaseline = "alphabetic";
     let y = 78;
+    const numTxt = q.qnum + ".";
     g.font = `700 14px ${FONT}`; g.fillStyle = ACC;
-    g.fillText(q.qnum + ".", M, y);
-    const indent = 26;
+    g.fillText(numTxt, M, y);
+    const indent = Math.max(26, g.measureText(numTxt).width + 9);
     g.font = `400 13.5px ${FONT}`; g.fillStyle = INK;
     for (const l of wrapText(g, data.stem || "", CW - indent)) { g.fillText(l, M + indent, y); y += 21; }
     y += 5;
@@ -1030,7 +1037,29 @@ async function buildPDF(picks, title) {
   const years = [...new Set(picks.map((p) => `${p.year} ${p.term}`))].join(" · ");
   await addDecor(out, decorCover(title || "기출 발췌", picks.length, years));
 
-  const srcs = new Map(), docxCache = new Map();
+  /* 필요한 페이지를 파일별로 모아 embedPages 를 딱 한 번씩만 부른다.
+     문제마다 부르면 원본의 폰트·이미지가 매번 복사돼 결과가 3배로 커진다. */
+  const need = new Map();
+  for (const q of picks) {
+    if (q.source === "docx") continue;
+    if (!need.has(q.file)) need.set(q.file, new Set());
+    const set = need.get(q.file);
+    for (let i = q.s; i < q.e; i++) set.add(i);
+  }
+  const embMap = new Map();
+  for (const [file, set] of need) {
+    const blob = await DB.get("files", file);
+    if (!blob) throw new Error(`원본 파일이 없습니다: ${file}`);
+    const src = await PDFLib.PDFDocument.load(await blob.arrayBuffer());
+    const idx = [...set].sort((a, b) => a - b).filter((i) => i < src.getPageCount());
+    const pages = idx.map((i) => src.getPage(i));
+    const embs = pages.length ? await out.embedPages(pages) : [];
+    const m = new Map();
+    idx.forEach((i, k) => m.set(i, { emb: embs[k], src: pages[k] }));
+    embMap.set(file, m);
+  }
+
+  const docxCache = new Map();
   let lastKey = null, pageNo = 1;
 
   for (const q of picks) {
@@ -1056,14 +1085,10 @@ async function buildPDF(picks, title) {
       continue;
     }
 
-    if (!srcs.has(q.file)) {
-      const blob = await DB.get("files", q.file);
-      if (!blob) throw new Error(`원본 파일이 없습니다: ${q.file}`);
-      srcs.set(q.file, await PDFLib.PDFDocument.load(await blob.arrayBuffer()));
-    }
-    const src = srcs.get(q.file);
+    const m = embMap.get(q.file);
+    if (!m) continue;
     const idx = [];
-    for (let i = q.s; i < Math.min(q.e, src.getPageCount()); i++) idx.push(i);
+    for (let i = q.s; i < q.e; i++) if (m.has(i)) idx.push(i);
     if (!idx.length) continue;
 
     for (let c = 0; c < idx.length; c += 4) {
@@ -1071,9 +1096,7 @@ async function buildPDF(picks, title) {
       const part = idx.length > 4 ? `${c / 4 + 1} / ${Math.ceil(idx.length / 4)}` : "";
       const slots = slotsFor(chunk.length);
       const page = await addDecor(out, decorQuestion(q, slots, pageNo, part));
-      const srcPages = chunk.map((i) => src.getPage(i));
-      const embs = await out.embedPages(srcPages);
-      embs.forEach((e, i) => placePage(page, e, srcPages[i], slots[i]));
+      chunk.forEach((i, k) => { const e = m.get(i); placePage(page, e.emb, e.src, slots[k]); });
       pageNo++;
     }
   }
