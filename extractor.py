@@ -10,6 +10,7 @@
 import os
 import re
 import glob
+import unicodedata
 from io import BytesIO
 
 from pypdf import PdfReader, PdfWriter
@@ -181,6 +182,13 @@ def make_title_page(title, subtitle=""):
 # ---------------------------------------------------------------------------
 
 
+def _nfc(s):
+    """맥·아이패드는 한글 파일명을 자모 분리(NFD)로 저장한다. 화면에는 "기말" 로
+    똑같이 보이지만 코드포인트가 달라 `"기말" in name` 이 실패한다.
+    파일명은 반드시 NFC 로 정규화한 뒤에 비교한다."""
+    return unicodedata.normalize("NFC", s or "")
+
+
 def scan_library(folder):
     """자료 폴더에 등록된 파일을 훑어 시험 세트 목록을 반환.
 
@@ -193,7 +201,7 @@ def scan_library(folder):
         return []
 
     for path in sorted(glob.glob(os.path.join(folder, "*"))):
-        name = os.path.basename(path)
+        name = _nfc(os.path.basename(path))
         if name.startswith("~$") or name.startswith("."):
             continue
         ext = os.path.splitext(name)[1].lower()
@@ -234,12 +242,13 @@ def scan_library(folder):
 
 def find_source(folder, year, subject, term, kind):
     """kind='풀이'(pdf) 또는 '문제'(docx) 원본 파일 경로를 찾는다."""
+    subject = _nfc(subject)
     if kind == "풀이":
         exact = os.path.join(folder, f"{year} {subject} {term} 풀이.pdf")
         if os.path.exists(exact):
             return exact
         for p in glob.glob(os.path.join(folder, "*.pdf")):
-            b = os.path.basename(p)
+            b = _nfc(os.path.basename(p))
             # 과목까지 확인한다. 빠뜨리면 요청한 과목이 없을 때 다른 과목 파일을
             # 조용히 반환해 엉뚱한 문제가 결과에 섞인다.
             if str(year) in b and term in b and "풀이" in b and subject in b:
@@ -251,7 +260,7 @@ def find_source(folder, year, subject, term, kind):
             if os.path.exists(exact):
                 return exact
         for p in glob.glob(os.path.join(folder, "*.docx")):
-            b = os.path.basename(p)
+            b = _nfc(os.path.basename(p))
             if b.startswith("~$"):
                 continue
             if str(year) in b and term in b and "풀이" not in b and subject in b:

@@ -38,6 +38,9 @@
   }
 
   *{box-sizing:border-box}
+  /* .row/.btn 의 display:flex 가 hidden 속성(UA 의 display:none)을 이겨서
+     숨겨야 할 버튼이 계속 보였다. 전역으로 못 박는다. */
+  [hidden]{display:none!important}
   body{
     margin:0; background:var(--bg); color:var(--ink);
     font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard",
@@ -386,12 +389,26 @@ function blocksOf(texts) {
   }));
 }
 
-function parseName(name) {
-  const y = name.match(/(?:19|20)\d{2}/); if (!y) return null;
+/* iOS·macOS 는 한글 파일명을 자모 분리(NFD)로 저장한다. 화면에는 "기말" 로
+   똑같이 보이지만 코드포인트가 달라 includes("기말") 가 실패한다.
+   반드시 NFC 로 정규화한 뒤에 비교해야 한다. */
+const nfc = (s) => (s || "").normalize("NFC");
+
+function parseName(raw) {
+  const name = nfc(raw);
+  const y = name.match(/(?:19|20)\d{2}/);
+  if (!y) return null;
   const term = name.includes("중간") ? "중간" : name.includes("기말") ? "기말" : null;
   if (!term) return null;
   const s = name.match(/(?:19|20)\d{2}\s+(.+?)\s+(?:중간|기말)/);
   return { year: +y[0], term, subject: s ? s[1].trim() : "" };
+}
+
+function whyNoParse(raw) {
+  const name = nfc(raw);
+  if (!name.match(/(?:19|20)\d{2}/)) return "연도 4자리를 찾지 못함";
+  if (!/중간|기말/.test(name)) return "'중간' 또는 '기말'을 찾지 못함";
+  return "이름 형식을 알아보지 못함";
 }
 
 /* ── BM25 ─────────────────────────────────────────────────────── */
@@ -467,24 +484,25 @@ $("f1").onchange = async (ev) => {
 
   for (let fi = 0; fi < files.length; fi++) {
     const f = files[fi];
-    const meta = parseName(f.name);
-    if (!meta) { skipped.push(f.name); continue; }
+    const name = nfc(f.name);                      // 자모 분리(NFD) 파일명 대응
+    const meta = parseName(name);
+    if (!meta) { skipped.push(`${name} — ${whyNoParse(name)}`); continue; }
     const buf = await f.arrayBuffer();
 
-    if (/\.docx$/i.test(f.name)) {                 // 시험지 DOCX
-      if (f.name.includes("풀이")) { skipped.push(f.name + " (풀이 DOCX는 지원하지 않음)"); continue; }
+    if (/\.docx$/i.test(name)) {                   // 시험지 DOCX
+      if (name.includes("풀이")) { skipped.push(name + " (풀이 DOCX는 지원하지 않음)"); continue; }
       let qs;
       try { qs = docxQuestions(buf); }
-      catch (e) { skipped.push(f.name + " (DOCX 읽기 실패)"); continue; }
-      if (!qs.length) { skipped.push(f.name + " (문제 0개)"); continue; }
-      const keepD = bank.filter((q) => q.file !== f.name);
+      catch (e) { skipped.push(name + " (DOCX 읽기 실패)"); continue; }
+      if (!qs.length) { skipped.push(name + " (문제 0개)"); continue; }
+      const keepD = bank.filter((q) => q.file !== name);
       bank.length = 0; bank.push(...keepD);
       for (const q of qs) {
         const id = `${meta.year}-${meta.term}-${meta.subject}-${q.num}`;
         await DB.put("docx", id, { stem: q.stem, presented: q.presented, choices: q.choices, images: q.images });
         bank.push({
           id, year: meta.year, term: meta.term, subject: meta.subject, qnum: q.num,
-          file: f.name, source: "docx", s: null, e: null,
+          file: name, source: "docx", s: null, e: null,
           text: [q.stem, ...q.presented, ...q.choices.map((c, i) => `${i + 1}) ${c}`)].join("\n").slice(0, 1400),
         });
       }
@@ -497,17 +515,17 @@ $("f1").onchange = async (ev) => {
       texts = await pageTexts(buf.slice(0), (p, n) => {
         bar.style.width = (((fi + p / n) / files.length) * 100).toFixed(1) + "%";
       });
-    } catch (e) { skipped.push(f.name + " (읽기 실패)"); continue; }
+    } catch (e) { skipped.push(name + " (읽기 실패)"); continue; }
 
     const blks = blocksOf(texts);
-    if (!blks.length) { skipped.push(f.name + " (문제 0개)"); continue; }
-    await DB.put("files", f.name, new Blob([buf], { type: "application/pdf" }));
-    const keep = bank.filter((q) => q.file !== f.name);
+    if (!blks.length) { skipped.push(name + " (문제 0개)"); continue; }
+    await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
+    const keep = bank.filter((q) => q.file !== name);
     bank.length = 0; bank.push(...keep);
     blks.forEach((b) => bank.push({
       id: `${meta.year}-${meta.term}-${meta.subject}-${b.qnum}`,
       year: meta.year, term: meta.term, subject: meta.subject, qnum: b.qnum,
-      file: f.name, source: "solution", s: b.s, e: b.e,
+      file: name, source: "solution", s: b.s, e: b.e,
       text: texts.slice(b.s, b.e).join("\n").trim().slice(0, 1400),
     }));
   }
@@ -521,8 +539,8 @@ $("f1").onchange = async (ev) => {
   await DB.put("meta", "bank", BANK);
   setTimeout(() => { $("b1").hidden = true; bar.style.width = "0"; }, 400);
   renderBank();
-  if (skipped.length) err("e1", "건너뜀 — " + skipped.join(", ") +
-    "\n파일 이름이 '2023 감면 기말 풀이.pdf' 형식인지 확인하세요.");
+  if (skipped.length) err("e1", "건너뜀\n· " + skipped.join("\n· ") +
+    "\n이름은 '2023 감면 기말 풀이.pdf' 또는 '2023 감면 기말.docx' 형식이어야 합니다.");
 };
 
 $("clr").onclick = async () => {
@@ -538,8 +556,8 @@ $("clr").onclick = async () => {
 $("f2").onchange = async (ev) => {
   const f = ev.target.files[0]; ev.target.value = "";
   if (!f) return;
-  err("e2", ""); LECNAME = f.name;
-  $("s2").innerHTML = `<span class="pill">${f.name} 읽는 중…</span>`;
+  err("e2", ""); LECNAME = nfc(f.name);
+  $("s2").innerHTML = `<span class="pill">${LECNAME} 읽는 중…</span>`;
   let text;
   try {
     const buf = await f.arrayBuffer();
@@ -550,7 +568,7 @@ $("f2").onchange = async (ev) => {
     err("e2", "텍스트가 거의 없는 강의안입니다(스캔 이미지). 아래 질문에는 후보가 덜 정확할 수 있으니, Claude 앱에서 강의안 첨부를 꼭 하세요.");
   }
   CAND = bm25(text, BANK, 80);
-  $("s2").innerHTML = `<span class="pill on">${f.name}</span><span class="pill">후보 ${CAND.length}문제</span>`;
+  $("s2").innerHTML = `<span class="pill on">${LECNAME}</span><span class="pill">후보 ${CAND.length}문제</span>`;
   setStep(2, "done"); setStep(3, "active");
   VERDICTS = []; $("qs").innerHTML = ""; setStep(4, "locked");
 };
