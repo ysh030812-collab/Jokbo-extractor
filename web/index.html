@@ -669,7 +669,8 @@ $("mk").onclick = async () => {
       .filter((li) => li.querySelector("input").checked)
       .map((li) => VERDICTS[+li.dataset.i]);
 
-    const bytes = await buildPDF(picks, LECNAME.replace(/\.pdf$/i, ""));
+    const { bytes, warnings } = await buildPDF(picks, LECNAME.replace(/\.pdf$/i, ""));
+    if (warnings.length) err("e4", warnings.join("\n"));
     const name = (LECNAME.replace(/\.pdf$/i, "") || "족보") + " 발췌.pdf";
     const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
 
@@ -1004,7 +1005,13 @@ function slotsFor(n) {
   if (n <= 1) return [[x0, y0, w, h]];
   const cw = (w - gap) / 2, ch = (h - gap) / 2;
   if (n === 2) return [[x0, y0, cw, h], [x0 + cw + gap, y0, cw, h]];
-  if (n === 3) return [[x0, y0, cw, h], [x0 + cw + gap, y0 + ch + gap, cw, ch], [x0 + cw + gap, y0, cw, ch]];
+  if (n === 3) {
+    /* 강의 슬라이드는 가로가 길다(4:3, 16:9). 세로로 긴 칸에 넣으면 폭이 아니라
+       높이에 걸려 오히려 작아지고 위아래가 빈다. 문제 슬라이드에 폭을 통째로
+       주는 편이 실제로 더 크게 나온다. */
+    const h1 = Math.round(h * 0.63), h2 = h - h1 - gap;
+    return [[x0, y0 + h2 + gap, w, h1], [x0, y0, cw, h2], [x0 + cw + gap, y0, cw, h2]];
+  }
   return [[x0, y0 + ch + gap, cw, ch], [x0 + cw + gap, y0 + ch + gap, cw, ch],
           [x0, y0, cw, ch], [x0 + cw + gap, y0, cw, ch]];
 }
@@ -1034,6 +1041,7 @@ const addDecor = async (out, draw, w = PW, h = PH) => {
 /* ── 최종 PDF 조립 ───────────────────────────────────────────────── */
 async function buildPDF(picks, title) {
   const out = await PDFLib.PDFDocument.create();
+  const warnings = [];
   const years = [...new Set(picks.map((p) => `${p.year} ${p.term}`))].join(" · ");
   await addDecor(out, decorCover(title || "기출 발췌", picks.length, years));
 
@@ -1053,6 +1061,11 @@ async function buildPDF(picks, title) {
     const src = await PDFLib.PDFDocument.load(await blob.arrayBuffer());
     const idx = [...set].sort((a, b) => a - b).filter((i) => i < src.getPageCount());
     const pages = idx.map((i) => src.getPage(i));
+    let annots = 0;
+    for (const pg of pages) {
+      try { const a = pg.node.Annots(); if (a && a.size && a.size()) annots += a.size(); } catch (e) { /* 없으면 무시 */ }
+    }
+    if (annots) warnings.push(`${file}: 원본의 형광펜·메모 ${annots}개는 옮겨지지 않습니다 (슬라이드 내용은 그대로 들어갑니다).`);
     const embs = pages.length ? await out.embedPages(pages) : [];
     const m = new Map();
     idx.forEach((i, k) => m.set(i, { emb: embs[k], src: pages[k] }));
@@ -1100,7 +1113,7 @@ async function buildPDF(picks, title) {
       pageNo++;
     }
   }
-  return await out.save();
+  return { bytes: await out.save(), warnings };
 }
 
 loadBank();
