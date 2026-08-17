@@ -378,7 +378,21 @@ _CIRC_RE = re.compile(r"^\s*([①②③④⑤⑥⑦⑧⑨⑩])\s*(.+)$")
 # <보기> 항목 표기:  가. 나. ... / ㄱ. ㄴ. ...  (모두 고른 것 유형의 '보기')
 _KOX_RE = re.compile(r"^\s*[가나다라마바사아자차]\s*[.)]\s*(.+)$")
 _JAMO_RE = re.compile(r"^\s*[ㄱ-ㅎ]\s*[.)]\s*(.+)$")
-_MAX_CHOICES = 5   # 선지는 최대 5개(1~5)로 가정 -> 문제번호와의 혼동 방지
+_MAX_CHOICES = 5   # 앞쪽 문제에서만 쓰는 통념. 뒤쪽은 최대 문제번호로 판단한다.
+
+# 구분점을 빠뜨린 문제 머리 — 실제 족보에 "144다음 중 …" 처럼 나온다.
+_LOOSE_NUM_RE = re.compile(r"^\s*(\d{1,3})\s*([가-힣A-Za-z][^\n]{5,})$")
+# 숫자 바로 뒤의 단위·조사. "8개월간 …" 을 8번 문제로 오인하지 않기 위한 것.
+_COUNTER_RE = re.compile(
+    r"^(개월|가지|시간|단계|퍼센트|개|명|번|째|쪽|장|년|월|일|주|시|분|초|차|회|배|종|"
+    r"세|도|형|군|위|대|층|등|인|병|살|kg|mg|ml|cm|mm|%)")
+# 워드 설문 서식이 문제마다 끼워 넣는 안내문 — 선지도 제시문도 아니다.
+_NOISE_RE = re.compile(r"^\s*하나를\s*(선택|고르)")
+
+
+def _is_stem(line):
+    """물음표로 끝나는 질문 줄인지. 번호가 통째로 빠진 1번을 되살릴 때만 쓴다."""
+    return bool(re.search(r"\?\s*$", line or ""))
 
 
 def _is_bogi_header(line):
@@ -445,17 +459,31 @@ def _classify_body(lines):
         return [], []
     lines = [t for t, _ in items]
 
-    # 선지에 쓰인 표기를 감지 (대시 > 동그라미 > 숫자 순)
-    if any(_DASH_RE.match(l) for l in lines):
-        marker_rx = _DASH_RE
-    elif any(_CIRC_RE.match(l) for l in lines):
-        marker_rx = _CIRC_RE
-    elif any(_NUMBERED_RE.match(l) for l in lines):
-        marker_rx = _NUMBERED_RE
-    else:
-        marker_rx = None
+    # 선지에 쓰인 표기를 감지. 우선순위를 고정하면 제시문에 '- ' 한 줄이 섞였을 때
+    # 정작 1)~5) 선지가 통째로 제시문이 된다 -> 가장 많이 쓰인 표기를 고른다.
+    marker_rx, best = None, 0
+    for rx in (_CIRC_RE, _NUMBERED_RE, _DASH_RE):
+        n = sum(1 for l in lines if rx.match(l))
+        if n > best:
+            marker_rx, best = rx, n
 
     presented, choices = [], []
+
+    if marker_rx is _NUMBERED_RE:
+        # 숫자 선지는 1부터 연달아 붙는다. 본문에 섞인 "300." 같은 줄이
+        # 선지 사이에 끼어들지 않도록 이어지는 번호만 선지로 본다.
+        want = None
+        for l in lines:
+            m = _NUMBERED_RE.match(l)
+            num = int(m.group(1)) if m else None
+            if m and want is None and num <= _MAX_CHOICES:
+                want = num
+            if m and num == want:
+                choices.append(m.group(2).strip())
+                want += 1
+            else:
+                presented.append((l, False))
+        return presented, choices
 
     if marker_rx is not None:
         for l in lines:
@@ -728,8 +756,12 @@ def parse_docx_questions(docx_path):
 
     핵심 난점: 선지도 '1.' '2.' 처럼 문제 번호와 똑같은 '숫자.' 형식일 수 있어,
     선지를 새 문제로 오인하기 쉽다. 그래서 상태 기계로 구분한다.
-      - 지문 뒤에서 1,2,3,... 로 이어지는 '숫자.' 는 선지(최대 5개)
+      - 지문 뒤에서 1,2,3,... 로 이어지는 '숫자.' 는 선지
+        (문제 번호는 커지기만 하므로, 지금까지의 최대 번호 이하이면 선지가 확실하다.
+         그 판단이 안 되는 앞쪽 구간에서만 '선지는 다섯 개까지'를 쓴다)
       - 그 외의 '숫자.' 는 새 문제 번호
+      - 구분점을 빠뜨린 "144다음 중 …" 도 바로 다음 번호이면 새 문제로 본다
+      - 번호가 통째로 빠진 1번 문제는 앞에 남은 물음표 줄에서 되살린다
       - 숫자 없는 기호(-, ①, ㄱ.)나 표시가 전혀 없는 줄도 선지로 인식
     """
     import docx
@@ -738,6 +770,7 @@ def parse_docx_questions(docx_path):
     cur = None
     expect = 1        # 현재 문제에서 다음에 올 '숫자.' 선지 번호(1부터)
     max_num = 0       # 지금까지 등장한 최대 문제 번호(문제 번호는 문서 내에서 증가)
+    pre, pre_imgs = [], []   # 첫 문제 번호가 나오기 전에 지나간 것들
 
     def start_question(num, stem):
         nonlocal cur, expect, max_num
@@ -746,6 +779,20 @@ def parse_docx_questions(docx_path):
         questions[num] = cur
         expect = 1
         max_num = max(max_num, num)
+
+    def stem_at():
+        """앞서 버려질 줄 중 물음표로 끝나는 첫 줄 위치(없으면 -1)."""
+        for i, (t, _l) in enumerate(pre):
+            if _is_stem(t):
+                return i
+        return -1
+
+    def adopt_pre(at):
+        """pre[at] 을 지문으로 삼아 1번 문제를 만든다."""
+        rest = pre[at:]
+        start_question(1, rest[0][0])
+        cur["_body"].extend(rest[1:])
+        cur["images"].extend(pre_imgs)
 
     for kind, obj in _iter_body_blocks(d):
         if kind == "tbl":
@@ -763,27 +810,50 @@ def parse_docx_questions(docx_path):
         # 워드 자동 번호 목록으로 서식이 지정된 문단인지 (선지 판별의 강력한 단서)
         is_list = _is_list_paragraph(para)
         for ln in lines:
-            if not ln:
+            if not ln or _NOISE_RE.match(ln):
                 continue
             nm = _NUMBERED_RE.match(ln)
             if nm:
                 num = int(nm.group(1))
-                if cur is not None and num == expect and expect <= _MAX_CHOICES:
+                if (cur is not None and num == expect
+                        and (expect <= _MAX_CHOICES or num <= max_num)):
                     # 지문 뒤에서 1,2,3.. 로 이어지는 숫자 -> 선지(본문에 원문 그대로 보관)
                     cur["_body"].append((ln, is_list))
                     expect += 1
-                elif (cur is None or num > max_num) and 1 <= num <= 400:
+                    continue
+                # 1번만 번호 없이 시작하고 선지부터 "1." 로 매겨진 족보가 있다.
+                # 앞에 물음표로 끝나는 줄이 남아 있으면 그 줄이 진짜 1번 지문이다.
+                if cur is None and num == 1 and not _is_stem(nm.group(2)):
+                    at = stem_at()
+                    if at >= 0:
+                        adopt_pre(at)
+                        cur["_body"].append((ln, is_list))
+                        expect = 2
+                        continue
+                if (cur is None or num > max_num) and 1 <= num <= 400:
                     # 문제 번호는 문서 내에서 커지기만 한다 -> 그럴 때만 새 문제
                     start_question(num, nm.group(2).strip())
                 elif cur is not None:
                     cur["_body"].append((ln, is_list))
                 continue
+            # 구분점을 빠뜨린 문제 머리 ("144다음 중 …")
+            lm = _LOOSE_NUM_RE.match(ln)
+            if lm and int(lm.group(1)) == max_num + 1 and not _COUNTER_RE.match(lm.group(2)):
+                start_question(int(lm.group(1)), lm.group(2))
+                continue
             # 숫자 없는 줄
             if cur is None:
+                pre.append((ln, is_list))
                 continue
             cur["_body"].append((ln, is_list))
-        if cur is not None and imgs:
-            cur["images"].extend(imgs)
+        if imgs:
+            (cur["images"] if cur is not None else pre_imgs).extend(imgs)
+
+    # 선지까지 워드 목록이라 "1." 이 글자로 안 남은 경우의 1번 복구
+    if 1 not in questions and questions and min(questions) == 2:
+        at = stem_at()
+        if at >= 0:
+            adopt_pre(at)
 
     # 본문을 제시문(보기·안내문 등)과 실제 선지로 분리
     for q in questions.values():

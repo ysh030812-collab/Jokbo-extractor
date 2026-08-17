@@ -1,0 +1,15 @@
+{
+  "name": "jokbo-extractor-tests",
+  "private": true,
+  "description": "web/src 파서의 회귀 테스트에만 쓰는 개발 의존성 (배포물에는 들어가지 않음)",
+  "scripts": {
+    "fixtures": "python3 tests/make_fixtures.py",
+    "test": "node tests/test_js.mjs && node tests/test_docx.mjs",
+    "build": "python3 web/src/build.py"
+  },
+  "devDependencies": {
+    "@xmldom/xmldom": "^0.9.5",
+    "fflate": "^0.8.2",
+    "playwright": "^1.49.1"
+  }
+}

@@ -1,0 +1,274 @@
+<meta charset="utf-8">
+<!-- 이게 없으면 사파리가 980px 짜리 창을 가정하고 통째로 축소해 버린다.
+     아이폰·아이패드에서 화면에 꽉 차게 하려면 반드시 있어야 한다. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>족보 추출기</title>
+<style>
+  :root{
+    --bg:#F2F4F6; --surface:#FFFFFF; --surface-2:#F7F8FA;
+    --ink:#191F28; --ink-2:#4E5968; --ink-3:#8B95A1;
+    --line:#E5E8EB; --line-2:#F0F2F4;
+    --accent:#3182F6; --accent-ink:#1B64DA; --accent-soft:#E8F2FE;
+    --ok:#00A661; --ok-soft:#E4F7EF;
+    --warn:#F59A23; --warn-soft:#FDF3E3;
+    --off:#8B95A1; --off-soft:#F1F3F5;
+    --danger:#E5484D;
+    --r-lg:20px; --r-md:14px; --r-sm:10px;
+    --shadow:0 1px 2px rgba(25,31,40,.04), 0 6px 20px rgba(25,31,40,.06);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#15171A; --surface:#1E2125; --surface-2:#25282D;
+      --ink:#EDEFF2; --ink-2:#B0B8C1; --ink-3:#7B848F;
+      --line:#2E3238; --line-2:#24272B;
+      --accent:#4E93F7; --accent-ink:#8CBAFB; --accent-soft:#1B2942;
+      --ok:#2FBF7E; --ok-soft:#16301F;
+      --warn:#F0A742; --warn-soft:#332714;
+      --off:#7B848F; --off-soft:#26292E;
+      --danger:#F16A6E;
+      --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.28);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#15171A; --surface:#1E2125; --surface-2:#25282D;
+    --ink:#EDEFF2; --ink-2:#B0B8C1; --ink-3:#7B848F;
+    --line:#2E3238; --line-2:#24272B;
+    --accent:#4E93F7; --accent-ink:#8CBAFB; --accent-soft:#1B2942;
+    --ok:#2FBF7E; --ok-soft:#16301F;
+    --warn:#F0A742; --warn-soft:#332714;
+    --off:#7B848F; --off-soft:#26292E;
+    --danger:#F16A6E;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px rgba(0,0,0,.28);
+  }
+
+  *{box-sizing:border-box}
+  /* .row/.btn 의 display:flex 가 hidden 속성(UA 의 display:none)을 이겨서
+     숨겨야 할 버튼이 계속 보였다. 전역으로 못 박는다. */
+  [hidden]{display:none!important}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard",
+                system-ui,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
+    -webkit-font-smoothing:antialiased; line-height:1.5;
+    font-size:16px;
+    padding:0 max(14px,env(safe-area-inset-right))
+             max(96px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));
+  }
+  .wrap{width:100%;max-width:940px;margin:0 auto}
+
+  header{padding:36px 4px 22px}
+  h1{margin:0;font-size:26px;font-weight:800;letter-spacing:-.03em}
+  header p{margin:8px 0 0;color:var(--ink-2);font-size:15px;letter-spacing:-.01em}
+  @media (min-width:700px){
+    header{padding:52px 4px 28px}
+    h1{font-size:32px}
+    header p{font-size:16.5px}
+  }
+
+  .card{
+    background:var(--surface); border-radius:var(--r-lg); padding:22px 20px;
+    margin-bottom:14px; box-shadow:var(--shadow);
+    border:1px solid var(--line-2);
+  }
+  .card[hidden]{display:none}
+  .card.locked{opacity:.5}
+
+  .head{display:flex;align-items:center;gap:11px;margin-bottom:4px}
+  .num{
+    flex:none;width:26px;height:26px;border-radius:50%;
+    background:var(--off-soft); color:var(--ink-3);
+    font-size:13px;font-weight:700; display:grid;place-items:center;
+    font-variant-numeric:tabular-nums; transition:background .2s,color .2s;
+  }
+  .card.active .num{background:var(--accent);color:#fff}
+  .card.done  .num{background:var(--ok);color:#fff}
+  h2{margin:0;font-size:17px;font-weight:700;letter-spacing:-.02em}
+  .sub{margin:6px 0 16px 37px;color:var(--ink-2);font-size:14px;letter-spacing:-.01em}
+  .body{margin-left:37px}
+  @media (max-width:420px){ .sub,.body{margin-left:0} }
+
+  button{
+    font:inherit;font-weight:600;letter-spacing:-.01em;cursor:pointer;
+    border:none;border-radius:var(--r-md);transition:transform .08s,background .15s;
+  }
+  button:active:not(:disabled){transform:scale(.985)}
+  button:disabled{opacity:.4;cursor:default}
+  button:focus-visible{outline:2.5px solid var(--accent);outline-offset:2px}
+  .btn{
+    width:100%;min-height:52px;background:var(--accent);color:#fff;font-size:16px;
+    display:flex;align-items:center;justify-content:center;gap:8px;
+  }
+  .btn.ghost{background:var(--surface-2);color:var(--ink)}
+  .btn.ok{background:var(--ok)}
+
+  input[type=file]{display:none}
+  .drop{
+    display:flex;align-items:center;gap:12px;width:100%;
+    padding:16px;border-radius:var(--r-md);
+    border:1.5px dashed var(--line); background:var(--surface-2);
+    color:var(--ink-2);font-size:14.5px;text-align:left;font-weight:500;
+  }
+  .drop b{color:var(--ink);font-weight:600}
+  .drop{align-items:flex-start}
+  .drop>span:first-child{font-size:19px;line-height:1.25}
+  .fmt{display:flex;flex-wrap:wrap;gap:6px;margin:9px 0 5px}
+  .fmt code{
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+    background:var(--surface);color:var(--ink-2);border:1px solid var(--line);
+    border-radius:7px;padding:4px 8px;white-space:nowrap;
+  }
+  .hint{display:block;color:var(--ink-3);font-size:12.5px;font-weight:500}
+
+  textarea{
+    width:100%;min-height:140px;padding:14px;font:inherit;font-size:14.5px;
+    border:1.5px solid var(--line);border-radius:var(--r-md);
+    background:var(--surface-2);color:var(--ink);resize:vertical;line-height:1.55;
+  }
+  textarea:focus{outline:none;border-color:var(--accent)}
+
+  .note{
+    background:var(--accent-soft);color:var(--accent-ink);
+    border-radius:var(--r-md);padding:13px 15px;font-size:14px;
+    margin:14px 0;letter-spacing:-.01em;
+  }
+  .note ol{margin:8px 0 0;padding-left:19px}
+  .note li{margin:5px 0}
+
+  .stat{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .pill{
+    font-size:13px;font-weight:600;padding:6px 11px;border-radius:999px;
+    background:var(--surface-2);color:var(--ink-2);font-variant-numeric:tabular-nums;
+  }
+  .pill.on{background:var(--accent-soft);color:var(--accent-ink)}
+
+  .bar{height:5px;border-radius:99px;background:var(--line-2);overflow:hidden;margin-top:14px}
+  .bar i{display:block;height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .25s}
+
+  /* 등록된 파일 목록 — 파일마다 지울 수 있다 */
+  ul.files{list-style:none;margin:14px 0 0;padding:0;display:flex;flex-direction:column;gap:7px}
+  .fi{
+    display:flex;align-items:center;gap:10px;padding:11px 8px 11px 13px;
+    background:var(--surface-2);border-radius:var(--r-sm);font-size:14.5px;
+  }
+  .fi .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+  .fi .ct{flex:none;color:var(--ink-3);font-size:13px;font-variant-numeric:tabular-nums}
+  .kind{flex:none;font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:6px;letter-spacing:-.01em}
+  .kind.sol{background:var(--accent-soft);color:var(--accent-ink)}
+  .kind.doc{background:var(--ok-soft);color:var(--ok)}
+  .fi .x{
+    flex:none;width:30px;height:30px;padding:0;border-radius:8px;
+    background:transparent;color:var(--ink-3);font-size:19px;line-height:1;
+    display:grid;place-items:center;
+  }
+  .fi .x:hover,.fi .x:active{background:var(--off-soft);color:var(--danger)}
+
+  ul.qs{list-style:none;margin:16px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+  /* 태블릿·데스크톱에서는 문제 목록을 두 줄로 깔아 화면을 채운다 */
+  @media (min-width:760px){
+    ul.qs{display:grid;grid-template-columns:1fr 1fr;align-items:start}
+  }
+  .q{
+    display:flex;gap:12px;align-items:flex-start;padding:14px;
+    background:var(--surface-2);border-radius:var(--r-md);
+    border:1.5px solid transparent;cursor:pointer;
+  }
+  .q.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .q input{margin:2px 0 0;width:20px;height:20px;accent-color:var(--accent);flex:none}
+  .q .meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:3px}
+  .q .who{font-weight:700;font-size:14.5px;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .q .why{color:var(--ink-2);font-size:13.5px;letter-spacing:-.01em}
+  .tag{font-size:11.5px;font-weight:700;padding:3px 8px;border-radius:6px;letter-spacing:-.01em}
+  .tag.solvable{background:var(--ok-soft);color:var(--ok)}
+  .tag.partial {background:var(--warn-soft);color:var(--warn)}
+  .tag.unrelated{background:var(--off-soft);color:var(--off)}
+  .tag.pg{background:var(--accent-soft);color:var(--accent-ink)}
+
+  /* 건너뛴 파일 목록은 줄바꿈으로 나열된다 — 접히면 읽을 수 없다 */
+  .err{color:var(--danger);font-size:14px;margin-top:12px;font-weight:500;white-space:pre-line}
+  .err:empty{margin-top:0}
+  .row{display:flex;gap:9px;margin-top:12px}
+  .row .btn{flex:1}
+  footer{margin:28px 4px 0;color:var(--ink-3);font-size:12.5px;line-height:1.7}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+<header>
+  <h1>족보 추출기</h1>
+  <p>강의안으로 풀 수 있는 기출만 골라 한 파일로 묶습니다.</p>
+</header>
+
+<!-- 1 ─────────────────────────────────────────────── -->
+<section class="card active" id="c1">
+  <div class="head"><span class="num">1</span><h2>족보 등록</h2></div>
+  <p class="sub">처음 한 번만. 기기에 저장되고 밖으로 나가지 않습니다.</p>
+  <div class="body">
+    <label class="drop" for="f1">
+      <span>📄</span><span><b>족보 파일 고르기</b> · 여러 개 한꺼번에
+        <span class="fmt"><code>2023 감면 기말 풀이.pdf</code><code>2023 감면 기말.docx</code></span>
+        <span class="hint">연도 · 과목 · 중간/기말 순서로, 풀이 슬라이드는 끝에 ‘풀이’</span></span>
+    </label>
+    <input type="file" id="f1" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple>
+    <div class="bar" id="b1" hidden><i></i></div>
+    <div class="stat" id="s1"></div>
+    <ul class="files" id="fl"></ul>
+    <div class="err" id="e1"></div>
+    <div class="row" id="r1" hidden><button class="btn ghost" id="clr">전체 지우기</button></div>
+  </div>
+</section>
+
+<!-- 2 ─────────────────────────────────────────────── -->
+<section class="card locked" id="c2">
+  <div class="head"><span class="num">2</span><h2>강의안 선택</h2></div>
+  <p class="sub">이번에 공부할 강의안 PDF 하나.</p>
+  <div class="body">
+    <label class="drop" for="f2">
+      <span>📘</span><span><b>강의안 PDF 고르기</b>
+        <span class="hint">이름은 아무래도 괜찮습니다</span></span>
+    </label>
+    <input type="file" id="f2" accept="application/pdf">
+    <div class="stat" id="s2"></div>
+    <div class="err" id="e2"></div>
+  </div>
+</section>
+
+<!-- 3 ─────────────────────────────────────────────── -->
+<section class="card locked" id="c3">
+  <div class="head"><span class="num">3</span><h2>Claude에 물어보기</h2></div>
+  <p class="sub">복사 → Claude 앱 → 답변 복사 → 돌아와서 붙여넣기.</p>
+  <div class="body">
+    <button class="btn" id="cp">질문 복사하기</button>
+    <div class="note">
+      <b>Claude 앱에서</b>
+      <ol>
+        <li>새 대화를 열고 <b>강의안 PDF를 첨부</b>합니다.</li>
+        <li>복사한 질문을 붙여넣고 보냅니다.</li>
+        <li>답변 맨 아래 <b>JSON 한 덩어리</b>를 복사해 옵니다.</li>
+      </ol>
+    </div>
+    <textarea id="ta" placeholder="Claude 답변을 여기에 붙여넣으세요"></textarea>
+    <button class="btn ghost" id="rd" style="margin-top:10px">답변 읽기</button>
+    <div class="err" id="e3"></div>
+  </div>
+</section>
+
+<!-- 4 ─────────────────────────────────────────────── -->
+<section class="card locked" id="c4">
+  <div class="head"><span class="num">4</span><h2>확인하고 받기</h2></div>
+  <p class="sub" id="s4">체크된 문제만 들어갑니다.</p>
+  <div class="body">
+    <ul class="qs" id="qs"></ul>
+    <button class="btn ok" id="mk" style="margin-top:16px">PDF 만들기</button>
+    <button class="btn ghost" id="op" hidden style="margin-top:9px">PDF 새 탭에서 열기</button>
+    <div class="stat" id="dl4s"><span class="pill" id="dl4"></span></div>
+    <div class="err" id="e4"></div>
+  </div>
+</section>
+
+<footer>
+  풀이 슬라이드는 3장을 한 페이지에 모아 붙이고, 시험지 DOCX는 문제를 다시 조판합니다.<br>
+  연도 최신순으로 정렬되며 표지와 구분 페이지가 들어갑니다.<br>
+  파일은 브라우저 안에서만 처리되며 어디에도 전송되지 않습니다.
+</footer>
+</div>
