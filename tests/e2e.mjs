@@ -61,7 +61,7 @@ console.log('■ 새로고침 후 :', (await txt('#s1')).replace(/\n/g, ' | '), 
 /* ── 3. Project 준비 ─────────────────────────────────────────── */
 console.log('\n■ 준비 전 :', (await txt('#s2')).replace(/\n/g, ' | '));
 for (const r of await pg.$$eval('#pf .fi', (ls) => ls.map((l) => l.innerText.replace(/\n/g, ' ')))) console.log('   ', r);
-console.log('   색인 버튼 보임 :', !(await pg.$eval('#mkidx', (e) => e.hidden)));
+console.log('   쪼개기 버튼 보임 :', !(await pg.$eval('#mkidx', (e) => e.hidden)));
 
 const t0 = Date.now();
 await pg.click('#mkidx');
@@ -78,7 +78,7 @@ console.log('\n■ 한도 검사');
 const rows = await pg.$$eval('#pf .fi .ct', (ls) => ls.map((l) => l.innerText));
 let bad = 0;
 for (const r of rows) {
-  const m = r.match(/(\d+)쪽 · ([\d.]+)MB/);
+  const m = r.match(/^(\d+)쪽 .*?([\d.]+)MB/);
   if (!m) continue;
   const pages = +m[1], mb = +m[2];
   const ok = pages <= 100 && mb <= 32;
@@ -108,19 +108,18 @@ const bank = await pg.evaluate(() => new Promise((res) => {
       .map((q) => ({ id: q.id, qnum: q.qnum, page: q.page, src: q.source, qp: (q.qp || []).length })));
   };
 }));
-const pic = bank.filter((q) => q.src === 'solution' && q.qnum == null);
-const num = bank.filter((q) => q.src === 'solution' && q.qnum != null);
-console.log('\n■ 문제 은행 :', bank.length, '개 | 번호 읽은 풀이', num.length, '| 그림(번호 미상)', pic.length);
-console.log('   그림 문제 id 예 :', pic.slice(0, 4).map((q) => q.id).join(', '));
+console.log('\n■ 문제 은행 :', bank.length, '개');
 
 await put('#f2', ['73. Antiviral agents (김채균).pdf']);
+/* 시험지가 없는 2020 은 Claude 가 쪽 범위로 답한다 — 코드가 문제 경계를 추측하지 않는다 */
 const answer = JSON.stringify([
-  { id: pic[0].id, verdict: 'solvable', pages: '3', why: '그림으로만 된 문제 — Project가 보고 골랐다' },
-  { id: pic[1].id, verdict: 'solvable', pages: '4', why: '그림 문제 2' },
-  { id: num[6].id, verdict: 'partial', pages: '', why: '텍스트 문제' },
+  { id: '2020-기말-감면-p14~16', no: '5', verdict: 'solvable', pages: '3', why: '그림으로만 된 문제 — Project가 슬라이드를 보고 번호까지 읽었다' },
+  { id: '2020-기말-감면-p29', verdict: 'solvable', pages: '4', why: '번호를 못 읽은 경우 (no 없음)' },
+  { id: '2020-기말-감면-p20~22', no: '7번', verdict: 'partial', pages: '', why: '번호 뒤에 번을 붙여 보내도 된다' },
   { id: '2023-기말-감면-87', verdict: 'solvable', pages: '5', why: '시험지 DOCX 쪽' },
   { id: '2022-기말-감면-144', verdict: 'solvable', pages: '6', why: '시험지 DOCX 쪽' },
-  { id: '9999-기말-감면-1', verdict: 'solvable', pages: '', why: '없는 문제' },
+  { id: '9999-기말-감면-1', verdict: 'solvable', pages: '', why: '없는 연도' },
+  { id: '2020-기말-감면-p9999', verdict: 'solvable', pages: '', why: '없는 쪽' },
 ]);
 await pg.fill('#ta', '판정 결과입니다.\n\n```json\n' + answer + '\n```');
 await pg.click('#rd');

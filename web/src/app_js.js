@@ -145,8 +145,11 @@ function blocksOf(texts) {
 
 /* 문제 하나를 가리키는 열쇠와 사람이 읽는 이름 */
 const qkey = (q) => (q.qnum != null ? `${q.sec || ""}${q.qnum}` : `p${q.page}`);
-const qlabel = (q) => (q.qnum != null
-  ? `${q.sec === "주" ? "주관식 " : ""}${q.qnum}번` : `${q.page}쪽`);
+/* 화면·결과 PDF 에 쓰는 이름. 쪽 범위는 슬라이드를 찾기 위한 것일 뿐이므로
+   Claude 가 슬라이드에서 읽어 준 문제 번호가 있으면 그걸 쓴다. */
+const qlabel = (q) => (q.no ? `${q.no}번`
+  : q.qnum != null ? `${q.sec === "주" ? "주관식 " : ""}${q.qnum}번`
+  : (q.to && q.to > q.page ? `${q.page}~${q.to}쪽` : `${q.page}쪽`));
 
 /* iOS·macOS 는 한글 파일명을 자모 분리(NFD)로 저장한다. 화면에는 "기말" 로
    똑같이 보이지만 코드포인트가 달라 includes("기말") 가 실패한다.
@@ -361,7 +364,7 @@ $("f1").onchange = async (ev) => {
       file: name, source: "solution", s: b.s, e: b.e, qp: b.qp,
       text: texts.slice(b.s, b.e).join("\n").trim().slice(0, 1400),
     }));
-    RAW[name] = { kind: "sol", v: PARSER_VER, n: items.length, items };
+    RAW[name] = { kind: "sol", v: PARSER_VER, n: items.length, np: texts.length, items };
   }
   bar.style.width = "100%";
   rebuild();
@@ -407,7 +410,7 @@ function renderProject() {
   const pf = $("pf"), s2 = $("s2");
   if (!asis.length && !need.length) { pf.innerHTML = ""; s2.innerHTML = ""; return; }
   s2.innerHTML = `<span class="pill on">올릴 파일 ${asis.length + MADE.length}개</span>` +
-    (need.length && !MADE.length ? `<span class="pill">색인 만들 연도 ${need.length}개</span>` : "");
+    (need.length && !MADE.length ? `<span class="pill">쪼갤 연도 ${need.length}개</span>` : "");
 
   const rows = asis.map((n) => `<li class="fi">
       <span class="kind doc">그대로</span>
@@ -415,9 +418,9 @@ function renderProject() {
       <span class="ct">${RAW[n].n}문제</span>
     </li>`);
   MADE.forEach((f, i) => rows.push(`<li class="fi">
-      <span class="kind sol">색인</span>
+      <span class="kind sol">조각</span>
       <span class="nm" title="${esc(f.name)}">${esc(f.name)}</span>
-      <span class="ct">${f.count}문제 · ${f.pages}쪽 · ${(f.bytes.length / 1048576).toFixed(1)}MB</span>
+      <span class="ct">${f.pages}쪽 · 원본 ${f.from}~${f.to} · ${(f.bytes.length / 1048576).toFixed(1)}MB</span>
       <button class="x" data-i="${i}" aria-label="${esc(f.name)} 내려받기" title="내려받기">↓</button>
     </li>`));
   pf.innerHTML = rows.join("");
@@ -426,7 +429,7 @@ function renderProject() {
   $("dlall").hidden = !MADE.length;
   $("dlhint").hidden = !MADE.length || !IS_APPLE;
   if (MADE.length) $("dlall").textContent =
-    MADE.length > 1 ? `색인 ${MADE.length}개 한 번에 받기` : "색인 파일 받기";
+    MADE.length > 1 ? `조각 ${MADE.length}개 한 번에 받기` : "조각 파일 받기";
   const ready = asis.length > 0 || MADE.length > 0;
   $("pn").hidden = !ready;
   $("cpins").hidden = !ready;
@@ -449,7 +452,7 @@ $("mkidx").onclick = async () => {
     MADE = [];
     btn.disabled = false; btn.textContent = "Project에 올릴 파일 만들기";
     renderProject();
-    return err("e2", "시험지 파일이 모든 연도에 있어 따로 만들 것이 없습니다. 위 파일을 그대로 올리세요.");
+    return info("e2", "시험지 파일이 모든 연도에 있어 따로 만들 것이 없습니다. 위 파일을 그대로 올리세요.");
   }
   btn.textContent = "만드는 중…";
   $("b2").hidden = false;
@@ -457,8 +460,8 @@ $("mkidx").onclick = async () => {
   MADE = [];
   try {
     for (let i = 0; i < need.length; i++) {
-      const [name] = need[i];
-      const files = await buildProjectIndex(name, RAW[name].items, (r) => {
+      const [name, meta] = need[i];
+      const files = await buildProjectChunks(name, meta, (r) => {
         bar.style.width = (((i + r) / need.length) * 100).toFixed(1) + "%";
       });
       MADE.push(...files);
@@ -508,6 +511,39 @@ function grabJSON(s) {
   return null;
 }
 
+/* 시험지가 없는 연도는 Claude 가 쪽 범위로 답한다: 2020-기말-감면-p442~444.
+   어느 슬라이드가 한 문제인지 코드가 추측하지 않으므로 어긋날 일이 없다.
+   쪽번호 앞의 p 는 문제 번호와 헷갈리지 않기 위한 것이다 (…-29 는 29번 문제). */
+const RE_SPAN = /^\s*(\d{4})-(중간|기말)-(.+?)-p(\d{1,4})(?:\s*[~\-–]\s*p?(\d{1,4}))?\s*$/;
+
+function solutionFileFor(year, term, subject) {
+  for (const [name, f] of Object.entries(RAW)) {
+    if (f.kind !== "sol") continue;
+    const q = f.items[0];
+    if (q && q.year === year && q.term === term && q.subject === subject) return [name, f.np || 0];
+  }
+  return null;
+}
+
+/* 쪽 범위 id 를 그대로 뽑아 쓸 수 있는 항목으로 바꾼다 */
+function spanPick(rawId) {
+  const m = RE_SPAN.exec(nfc(rawId || ""));
+  if (!m) return null;
+  const [, y, term, subject, a, b] = m;
+  const hit = solutionFileFor(+y, term, subject.trim());
+  if (!hit) return null;
+  const [file, np] = hit;
+  const from = +a, to = Math.max(from, +(b || a));
+  if (to - from > 12) return null;                 // 한 문제가 열 장을 넘지는 않는다
+  if (np && (from < 1 || from > np)) return null;  // 원본에 없는 쪽 — 조용히 빠지지 않게
+  return {
+    id: `${y}-${term}-${subject.trim()}-p${from}${to > from ? "~" + to : ""}`,
+    year: +y, term, subject: subject.trim(),
+    qnum: null, sec: "", page: from, to, ord: from,
+    file, source: "solution", s: from - 1, e: to, text: "",
+  };
+}
+
 $("rd").onclick = () => {
   err("e3", "");
   const raw = $("ta").value.trim();
@@ -519,15 +555,18 @@ $("rd").onclick = () => {
   VERDICTS = [];
   const miss = [];
   arr.forEach((v) => {
-    const q = byId.get(nfc(v.id || ""));
-    if (!q) { if (v.id) miss.push(v.id); return; }
     const vd = ["solvable", "partial", "unrelated"].includes(v.verdict) ? v.verdict : "partial";
-    VERDICTS.push({ ...q, verdict: vd, pages: v.pages || "", why: v.why || "" });
+    const q = byId.get(nfc(v.id || "")) || spanPick(v.id);
+    if (!q) { if (v.id) miss.push(v.id); return; }
+    /* no 는 Claude 가 슬라이드에서 읽어 준 문제 번호 (표시용). 짧게 잘라 쓴다. */
+    const no = String(v.no == null ? "" : v.no).trim().replace(/번\s*$/, "").slice(0, 12);
+    VERDICTS.push({ ...q, no, verdict: vd, pages: v.pages || "", why: v.why || "" });
   });
   if (!VERDICTS.length) {
     return err("e3", "등록된 족보와 일치하는 문제가 없습니다." +
       (miss.length ? `\n받은 id: ${miss.slice(0, 3).join(", ")}${miss.length > 3 ? " …" : ""}` +
-        "\n id 는 '2023-기말-감면-6' 형식이어야 하고, 그 족보가 1단계에 등록돼 있어야 합니다." : ""));
+        "\n id 는 '2023-기말-감면-6' 이나 '2020-기말-감면-p442~444' 형식이어야 하고," +
+        "\n 그 족보가 1단계에 등록돼 있어야 합니다." : ""));
   }
   VERDICTS.sort((a, b) => b.year - a.year || TERM_ORD[a.term] - TERM_ORD[b.term] || (a.ord ?? a.qnum) - (b.ord ?? b.qnum));
   if (miss.length) err("e3", `문제 은행에 없는 항목 ${miss.length}개는 건너뜁니다 — ${miss.slice(0, 3).join(", ")}${miss.length > 3 ? " …" : ""}`);

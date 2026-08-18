@@ -60,6 +60,8 @@ async function run({ apple }) {
   console.log(`   버튼 문구 : ${await pg.$eval('#dlall', (e) => e.textContent)}`);
   ck(`${tag} — 안내문 표시`, !(await pg.$eval('#dlhint', (e) => e.hidden)), apple);
 
+  const made = await pg.$$eval('#pf .fi .x', (ls) => ls.length);
+  console.log(`   만들어진 조각 : ${made}개`);
   await pg.click('#dlall');                       // 실제 탭 → 사용자 제스처 유지
   await pg.waitForTimeout(2000);
   const shared = await pg.evaluate(() => window.__shared);
@@ -67,13 +69,14 @@ async function run({ apple }) {
 
   if (apple) {
     ck('아이패드 — 공유 시트로 넘김', !!shared, true);
-    ck('아이패드 — 파일 전부 한 번에', shared && shared.names.length, 4);
+    ck('아이패드 — 파일 전부 한 번에', shared && shared.names.length, made);
     ck('아이패드 — 사용자 제스처 유효', shared && shared.active, true);
     ck('아이패드 — 링크 방식은 안 씀', links.length, 0);
     console.log('   넘긴 파일 :', shared.names.map((n, i) => `${n} ${(shared.sizes[i] / 1048576).toFixed(1)}MB`).join(' / '));
+    console.log('   합계 :', (shared.sizes.reduce((a, b) => a + b, 0) / 1048576).toFixed(1), 'MB');
   } else {
     ck('데스크톱 — 공유 시트 안 씀', shared, null);
-    ck('데스크톱 — 파일 전부 내려받음', links.length, 4);
+    ck('데스크톱 — 파일 전부 내려받음', links.length, made);
     console.log('   내려받은 파일 :', links.join(' / '));
   }
   ck(`${tag} — 콘솔 오류 없음`, errs, []);
