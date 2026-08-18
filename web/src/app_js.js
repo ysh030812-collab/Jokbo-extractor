@@ -70,17 +70,33 @@ const qnumRe = (strict) => strict
   ? /(?:^|\n)[ \t]*(?:[•·\-*]\s*)?(\d+)\s*[.)]\s*(\S[^\n]{3,})/g
   : /(?:^|\n)[ \t]*(?:[•·\-*]\s*)?(\d+)\s*[.)]?\s*(\S[^\n]{3,})/g;
 
-/* 이어지는 장/해설 장인가 — 문제 화면을 고를 때 계속 쓰는 판정 */
+/* 객관식이 끝나고 주관식이 1번부터 다시 시작하는 족보가 있다. 번호가 뒤로
+   돌아가므로 그냥 두면 그 뒤가 통째로 번호 미상 한 덩어리가 된다. */
+const RE_SUBJ = /주관식\s*(\d{1,3})/;
+/* 강의록 쪽만 적어 둔 출처 슬라이드 — 문제도 해설도 아니다.
+   ("신진욱교수님 레트로바이러스강의록2page", "신진욱교수님63. 오소믹소4p") */
+const isSource = (t) => {
+  const s = (t || "").replace(/\s/g, "");
+  if (!s || s.length >= 60 || /[?？]/.test(s)) return false;   // 물음표가 있으면 문제다
+  return /(강의록|강의안|교재)/.test(s) || /\d+p(age)?$/i.test(s);
+};
+/* 이어지는 장/해설 장/출처 장인가 — 문제 화면을 고를 때 계속 쓰는 판정 */
 const isCont = (t) => {
   const mk = RE_MARK.exec(t || "");
-  return (mk && +mk[1] > 1) || RE_ANS.test((t || "").trim());
+  return (mk && +mk[1] > 1) || RE_ANS.test((t || "").trim()) || isSource(t);
 };
 
 function scanStarts(texts, strict) {
-  const out = []; let last = 0;
+  const out = []; let last = 0, sec = "";
   texts.forEach((t, i) => {
-    if (isCont(t)) return;                     // 이어지는 슬라이드 · 해설 슬라이드
+    if (isCont(t)) return;                     // 이어지는 · 해설 · 출처 슬라이드
     const head = "\n" + t.split("\n").filter((l) => l.trim()).slice(0, 4).join("\n");
+    /* '주관식 31' 을 만나면 그때부터 번호를 따로 센다. 뒤이어 접두어 없이
+       32, 33 … 으로만 적힌 것도 이 계열로 이어진다. */
+    const sm = RE_SUBJ.exec(head);
+    if (sm && (sec !== "주" || +sm[1] > last)) {
+      sec = "주"; last = +sm[1]; out.push([i, last, sec]); return;
+    }
     const re = qnumRe(strict); let m, pick = null;
     while ((m = re.exec(head))) {
       if (m[1].length > 3) continue;           // 연도 등 4자리 이상은 문제번호 아님
@@ -93,10 +109,10 @@ function scanStarts(texts, strict) {
          억지로 추정하지 않고 쪽 번호로 식별한다 — 원본 슬라이드는 그 쪽을
          그대로 쓰므로 결과물은 온전하고, 잘못된 번호가 붙지 않는다. */
       if (out.length && t.replace(/\s/g, "").length < 20 && i > 0 && isCont(texts[i - 1]))
-        out.push([i, null]);
+        out.push([i, null, sec]);
       return;
     }
-    out.push([i, pick]); last = pick;
+    out.push([i, pick, sec]); last = pick;
   });
   return out;
 }
@@ -115,17 +131,22 @@ function blocksOf(texts) {
     const lo = scanStarts(texts, false);
     if (numbered(lo) > numbered(st)) st = lo;
   }
-  let lastNum = 0;
-  return st.map(([pg, num], i) => {
+  let lastNum = 0, i0 = 0;
+  return st.map(([pg, num, sec], i) => {
     const e = i + 1 < st.length ? st[i + 1][0] : texts.length;
-    /* 번호를 모르는 문제도 원래 자리에 오도록 정렬 키를 따로 둔다 */
-    const ord = num != null ? (lastNum = num) : lastNum + 0.5;
-    return { qnum: num, page: pg + 1, ord, s: pg, e, qp: questionPages(texts, pg, e) };
+    /* 번호를 모르는 문제도 원래 자리에 오도록 정렬 키를 따로 둔다.
+       주관식은 번호가 다시 작아지므로 객관식 뒤로 보낸다. */
+    if (sec === "주" && !i0) { i0 = 1; lastNum = Math.max(lastNum, 400); }
+    const ord = num != null ? (lastNum = (sec === "주" ? 400 + num : num)) : lastNum + 0.5;
+    return { qnum: num, sec: sec || "", page: pg + 1, ord, s: pg, e,
+             qp: questionPages(texts, pg, e) };
   });
 }
 
-/* 화면·PDF에 쓰는 문제 이름. 번호를 못 읽은 그림 문제는 쪽으로 부른다. */
-const qlabel = (q) => (q.qnum != null ? `${q.qnum}번` : `${q.page}쪽`);
+/* 문제 하나를 가리키는 열쇠와 사람이 읽는 이름 */
+const qkey = (q) => (q.qnum != null ? `${q.sec || ""}${q.qnum}` : `p${q.page}`);
+const qlabel = (q) => (q.qnum != null
+  ? `${q.sec === "주" ? "주관식 " : ""}${q.qnum}번` : `${q.page}쪽`);
 
 /* iOS·macOS 는 한글 파일명을 자모 분리(NFD)로 저장한다. 화면에는 "기말" 로
    똑같이 보이지만 코드포인트가 달라 includes("기말") 가 실패한다.
@@ -209,7 +230,7 @@ const info = (id, msg) => { $(id).textContent = msg || ""; $(id).classList.toggl
 /* ── 1. 족보 등록 ─────────────────────────────────────────────── */
 /* 파서를 고쳐도 이미 등록된 파일은 예전 결과 그대로 남는다. 파일마다 어느 판으로
    읽었는지 적어 두고, 낡았으면 다시 올리라고 알려 준다. 올리기 전에는 지우지 않는다. */
-const PARSER_VER = 3;
+const PARSER_VER = 4;
 /* 같은 문제가 풀이와 시험지에 다 있으면 풀이 슬라이드를 쓴다 (원본이 그대로 들어가므로) */
 function rebuild() {
   const best = new Map();
@@ -313,7 +334,7 @@ $("f1").onchange = async (ev) => {
         await DB.put("docx", id, { stem: q.stem, presented: q.presented, choices: q.choices, images: q.images });
         items.push({
           id, year: meta.year, term: meta.term, subject: meta.subject,
-          qnum: q.num, page: null, ord: q.num,
+          qnum: q.num, sec: "", page: null, ord: q.num,
           file: name, source: "docx", s: null, e: null,
           text: [q.stem, ...q.presented, ...q.choices.map((c, i) => `${i + 1}) ${c}`)].join("\n").slice(0, 1400),
         });
@@ -334,9 +355,9 @@ $("f1").onchange = async (ev) => {
     if (!blks.length) { skipped.push(name + " (문제 0개)"); continue; }
     await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
     const items = blks.map((b) => ({
-      id: `${meta.year}-${meta.term}-${meta.subject}-${b.qnum != null ? b.qnum : "p" + b.page}`,
+      id: `${meta.year}-${meta.term}-${meta.subject}-${qkey(b)}`,
       year: meta.year, term: meta.term, subject: meta.subject,
-      qnum: b.qnum, page: b.page, ord: b.ord,
+      qnum: b.qnum, sec: b.sec, page: b.page, ord: b.ord,
       file: name, source: "solution", s: b.s, e: b.e, qp: b.qp,
       text: texts.slice(b.s, b.e).join("\n").trim().slice(0, 1400),
     }));

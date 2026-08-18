@@ -17,7 +17,8 @@ python3 tests/make_big_solution.py   # 실제 규모(511쪽) 풀이 PDF — 색�
 ## 돌리기
 
 ```sh
-node tests/test_js.mjs      # 풀이 PDF 블록 스캔 · 파일명(NFC/NFD) · JSON 파싱
+node tests/test_js.mjs       # 파일명(NFC/NFD) · 블록 범위 · JSON 파싱
+node tests/test_scan.mjs     # 풀이 PDF 블록 스캔 — 2020 실물 구조 (주관식·출처 슬라이드)
 node tests/test_docx.mjs     # 시험지 DOCX 파싱
 node tests/test_download.mjs # 내려받기 — 아이패드는 공유 시트, 그 외는 링크
 node tests/e2e.mjs           # 브라우저 전 과정 (CHROME=<크로미움 경로> 로 지정 가능)
@@ -41,6 +42,8 @@ Claude 의 요청 한도(**32MB · 100쪽**) 안에 들어오는지 검사하고
 | `하나를 선택하세요.` | 워드 설문 안내문이 선지로 들어가던 것 |
 | 텍스트 상자 | `mc:Fallback` + `w:txbxContent` 를 둘 다 읽어 내용이 2\~3번 중복되던 것 |
 | 2020 풀이의 캡처 슬라이드 | 문제 화면이 그림뿐이면 그 문제가 통째로 사라지고, 슬라이드가 앞 문제에 딸려 들어갔다 |
+| 2020 풀이의 주관식 구간 | 객관식 298번 뒤에 주관식이 31번부터 다시 시작한다. 번호가 되돌아가 전부 무시되면서 마지막 블록 하나가 파일 끝까지 뻗었고, 색인에 같은 id(`p513`)가 16장 찍혔다 |
+| `신진욱교수님레트로바이러스강의록2page` | 강의록 쪽만 적힌 출처 슬라이드가 문제 화면으로 분류됐다 |
 
 ## 내려받기 테스트가 지키는 것
 

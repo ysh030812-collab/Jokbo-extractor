@@ -518,7 +518,8 @@ function decorIdxCover(meta, nums, part, total) {
       `${total > 1 ? `${part} / ${total} 번째 파일 · ` : ""}문제 ${nums.length}개`,
       "풀이 슬라이드에서 문제 화면만 뽑은 것입니다. 해설 슬라이드는 들어 있지 않습니다.",
       "각 쪽 위에 id 가 찍혀 있습니다. 답할 때는 그 id 를 그대로 옮겨 적으세요.",
-      "번호가 p 로 시작하는 것은 문제 번호가 그림 안에만 있어 기계가 읽지 못한 쪽입니다. 그대로 쓰면 됩니다.",
+      "번호가 p 로 시작하면 문제 번호가 그림 안에만 있어 기계가 읽지 못한 쪽이고,",
+      "주 로 시작하면 주관식입니다. 어느 쪽이든 찍힌 id 를 그대로 쓰면 됩니다.",
     ];
     let y = 176;
     for (const l of lines) { for (const s of wrapText(g, l, PW - 150)) { g.fillText(s, 64, y); y += 19; } }
@@ -570,7 +571,10 @@ async function buildProjectIndex(fileName, items, onProgress) {
   /* 스탬프에 찍는 id 는 문제 은행의 id 를 그대로 쓴다. 여기서 새로 만들면
      Claude 가 돌려준 id 를 웹앱이 못 찾는 일이 생긴다. */
   const keep = [];
-  for (const q of items) for (const page of (q.qp || [q.s])) keep.push({ page, id: q.id, label: qlabel(q) });
+  /* 한 문제에서 여러 쪽을 넣으면 같은 id 가 열몇 장씩 되풀이된다. 문제 화면은
+     앞 한두 장이면 충분하다. */
+  for (const q of items) for (const page of (q.qp || [q.s]).slice(0, 2))
+    keep.push({ page, id: q.id, label: qlabel(q) });
   keep.sort((a, b) => a.page - b.page);
   if (!keep.length) throw new Error(`${fileName}: 문제 화면을 찾지 못했습니다`);
 
@@ -594,7 +598,7 @@ async function buildProjectIndex(fileName, items, onProgress) {
 function projectInstructions(docxFiles, idxFiles) {
   const lines = [];
   if (docxFiles.length) lines.push(`- 시험지 파일 (${docxFiles.join(", ")}) — 문제 전문이 들어 있습니다.\n  id 는 파일 이름에서 만듭니다: 연도-학기-과목-번호 (예: 2023-기말-감면-6)`);
-  if (idxFiles.length) lines.push(`- 문제 색인 파일 (${idxFiles.join(", ")}) — 시험지가 없는 연도라 풀이 슬라이드에서\n  문제 화면만 뽑은 것입니다. 각 쪽 위에 id 가 찍혀 있으니 **그대로** 옮겨 적으세요.\n  id 의 번호가 p 로 시작하면(예: 2020-기말-감면-p14) 문제 번호가 그림 안에만 있어\n  기계가 읽지 못한 쪽입니다. 그림에 보이는 번호로 바꾸지 말고 p 가 붙은 id 를 그대로 쓰세요.`);
+  if (idxFiles.length) lines.push(`- 문제 색인 파일 (${idxFiles.join(", ")}) — 시험지가 없는 연도라 풀이 슬라이드에서\n  문제 화면만 뽑은 것입니다. 각 쪽 위에 id 가 찍혀 있으니 **그대로** 옮겨 적으세요.\n  id 의 번호가 p 로 시작하면(예: 2020-기말-감면-p14) 문제 번호가 그림 안에만 있어\n  기계가 읽지 못한 쪽이고, 주 로 시작하면(예: 2020-기말-감면-주37) 주관식입니다.\n  어느 쪽이든 그림에 보이는 번호로 바꾸지 말고 찍힌 id 를 그대로 쓰세요.`);
 
   return `이 Project 에는 의과대학 기출 족보가 들어 있습니다.
 대화마다 강의안 PDF 한 개가 첨부됩니다. 그 강의안으로 **풀 수 있는** 기출문제만 골라 주세요.
