@@ -86,27 +86,8 @@ for (const r of rows) {
   console.log(`   ${ok ? '✅' : '❌'} ${pages}쪽 (한도 100) · ${mb}MB (한도 32)`);
 }
 
-/* 만든 색인 파일을 꺼내 눈으로 확인할 수 있게 남긴다 */
-const idx = await pg.evaluate(async () => {
-  const f = (window.__made0 || null); return f;
-});
-const idxB64 = await pg.evaluate(() => new Promise((res) => {
-  const el = document.querySelector('#pf .fi .x');
-  if (!el) return res(null);
-  const orig = URL.createObjectURL;
-  URL.createObjectURL = (b) => { b.arrayBuffer().then((ab) => {
-    let s = ''; const u = new Uint8Array(ab);
-    for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192));
-    res(btoa(s));
-  }); return 'blob:stub'; };
-  window.open = () => {};
-  el.click();
-  URL.createObjectURL = orig;
-}));
-if (idxB64) {
-  fs.writeFileSync(path.join(HERE, 'e2e_index_out.pdf'), Buffer.from(idxB64, 'base64'));
-  console.log('\n■ 색인 첫 파일 → tests/e2e_index_out.pdf');
-}
+/* 색인 파일을 실제로 내려받는 경로는 test_download.mjs 가 따로 검사한다.
+   (헤드리스에서 다운로드를 가로채면 실행 문맥이 날아가 매달린다) */
 
 /* 지시문 */
 const ins = await pg.evaluate(() => {
@@ -148,7 +129,11 @@ console.log('\n■ 목록 :', await txt('#s4'), '| 안내 :', JSON.stringify(awa
 for (const r of await pg.$$eval('#qs .q', (ls) => ls.map((l) => l.innerText.replace(/\n/g, ' · ')))) console.log('   ', r);
 
 await pg.click('#mk');
-await pg.waitForFunction(() => window.__blob, null, { timeout: 300000 });
+await pg.waitForFunction(() => !document.getElementById('op').hidden, null, { timeout: 300000 });
+/* 만들기와 받기가 나뉘어 있다 — 받기 버튼을 실제로 눌러 파일이 나오는지 본다 */
+console.log('\n■ 받기 버튼 :', (await pg.$eval('#op', (e) => e.textContent)).trim(), '| 안내 :',
+  await pg.$eval('#dlhint4', (e) => (e.hidden ? '(숨김 — 애플 기기 아님)' : e.innerText.trim())));
+await pg.waitForFunction(() => window.__blob, null, { timeout: 60000 });
 const info = await pg.evaluate(async () => {
   const ab = await window.__blob.arrayBuffer();
   const d = await PDFLib.PDFDocument.load(ab);

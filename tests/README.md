@@ -18,8 +18,9 @@ python3 tests/make_big_solution.py   # 실제 규모(511쪽) 풀이 PDF — 색�
 
 ```sh
 node tests/test_js.mjs      # 풀이 PDF 블록 스캔 · 파일명(NFC/NFD) · JSON 파싱
-node tests/test_docx.mjs    # 시험지 DOCX 파싱
-node tests/e2e.mjs          # 브라우저 전 과정 (CHROME=<크로미움 경로> 로 지정 가능)
+node tests/test_docx.mjs     # 시험지 DOCX 파싱
+node tests/test_download.mjs # 내려받기 — 아이패드는 공유 시트, 그 외는 링크
+node tests/e2e.mjs           # 브라우저 전 과정 (CHROME=<크로미움 경로> 로 지정 가능)
 ```
 
 `e2e.mjs` 는 등록 → 파일 삭제 → 재등록 → 새로고침 → Project 색인 생성 →
@@ -40,3 +41,16 @@ Claude 의 요청 한도(**32MB · 100쪽**) 안에 들어오는지 검사하고
 | `하나를 선택하세요.` | 워드 설문 안내문이 선지로 들어가던 것 |
 | 텍스트 상자 | `mc:Fallback` + `w:txbxContent` 를 둘 다 읽어 내용이 2\~3번 중복되던 것 |
 | 2020 풀이의 캡처 슬라이드 | 문제 화면이 그림뿐이면 그 문제가 통째로 사라지고, 슬라이드가 앞 문제에 딸려 들어갔다 |
+
+## 내려받기 테스트가 지키는 것
+
+아이패드 사파리는 blob 에 붙은 `<a download>` 를 무시하는 일이 잦아 색인 파일이
+아예 저장되지 않았다. `test_download.mjs` 는 아이패드 UA 로 띄워
+
+- 공유 시트(Web Share)로 넘어가는지
+- 만든 파일을 **한 번에 전부** 넘기는지
+- `share()` 호출 시점에 사용자 제스처가 살아 있는지 (만들기와 받기를 나눈 이유)
+- 아이패드가 아니면 링크 방식으로 내려받는지
+
+를 검사한다. `share()` 앞에 `await` 를 넣으면 제스처 자격이 사라져 실패하므로,
+바이트를 미리 들고 있다가 버튼 핸들러에서 동기로 넘겨야 한다.

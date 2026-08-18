@@ -4,7 +4,7 @@
   "description": "web/ 웹앱의 회귀 테스트에만 쓰는 개발 의존성 (배포물에는 들어가지 않음)",
   "scripts": {
     "fixtures": "python3 tests/make_fixtures.py && python3 tests/make_e2e_inputs.py && python3 tests/make_big_solution.py",
-    "test": "node tests/test_js.mjs && node tests/test_docx.mjs",
+    "test": "node tests/test_js.mjs && node tests/test_docx.mjs && node tests/test_download.mjs",
     "e2e": "node tests/e2e.mjs",
     "build": "python3 web/src/build.py"
   },

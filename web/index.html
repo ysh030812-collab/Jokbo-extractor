@@ -188,6 +188,7 @@
 
   /* 건너뛴 파일 목록은 줄바꿈으로 나열된다 — 접히면 읽을 수 없다 */
   .err{color:var(--danger);font-size:14px;margin-top:12px;font-weight:500;white-space:pre-line}
+  .err.info{color:var(--ink-2)}                 /* 오류가 아닌 안내 */
   .err:empty{margin-top:0}
   .row{display:flex;gap:9px;margin-top:12px}
   .row .btn{flex:1}
@@ -234,6 +235,10 @@
     <div class="bar" id="b2" hidden><i></i></div>
     <div class="stat" id="s2"></div>
     <ul class="files" id="pf"></ul>
+    <button class="btn ok" id="dlall" hidden style="margin-top:10px">색인 한 번에 받기</button>
+    <p class="hint" id="dlhint" hidden style="margin:8px 2px 0">
+      아이패드·아이폰은 공유 시트가 뜹니다. <b>‘파일에 저장’</b>을 고르면 한 번에 다 저장됩니다.
+    </p>
     <div class="err" id="e2"></div>
     <div class="note" id="pn" hidden>
       <b>Claude 앱에서</b>
@@ -278,7 +283,10 @@
   <div class="body">
     <ul class="qs" id="qs"></ul>
     <button class="btn ok" id="mk" style="margin-top:16px">PDF 만들기</button>
-    <button class="btn ghost" id="op" hidden style="margin-top:9px">PDF 새 탭에서 열기</button>
+    <button class="btn" id="op" hidden style="margin-top:9px">PDF 받기</button>
+    <p class="hint" id="dlhint4" hidden style="margin:8px 2px 0">
+      아이패드·아이폰은 공유 시트가 뜹니다. <b>‘파일에 저장’</b>을 고르세요.
+    </p>
     <div class="stat" id="dl4s"><span class="pill" id="dl4"></span></div>
     <div class="err" id="e4"></div>
   </div>
@@ -506,17 +514,62 @@ function whyNoParse(raw) {
   return "이름 형식을 알아보지 못함";
 }
 
+/* ── 만든 파일을 기기에 넘기기 ──────────────────────────────────
+   아이패드·아이폰 사파리는 blob 에 붙은 <a download> 를 그냥 무시하는 일이 잦고,
+   새 탭으로 여는 것도 팝업 차단에 걸린다. 확실한 길은 공유 시트뿐인데, 마침
+   여러 파일을 한 번에 넘길 수 있어서 '파일에 저장' 한 번으로 끝난다.
+
+   share() 는 사용자가 방금 누른 상태(transient activation)에서만 동작한다.
+   앞에 await 를 두면 그 자격이 사라지므로, 만들기와 내려받기 버튼을 반드시
+   나눠 둔다. 여기서는 바이트를 이미 들고 있으므로 동기로 넘긴다. */
+const IS_APPLE = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+function linkSave(list) {
+  list.forEach((f, i) => setTimeout(() => {
+    const url = URL.createObjectURL(new Blob([f.bytes], { type: "application/pdf" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = f.name; a.rel = "noopener";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 300000);
+  }, i * 350));
+}
+
+/* 넘긴 방식을 돌려준다 ("share" | "link"). 실패하면 링크 방식으로 되돌린다. */
+function handOff(list, onNote) {
+  if (!list.length) return null;
+  const files = list.map((f) => new File([f.bytes], f.name, { type: "application/pdf" }));
+  if (IS_APPLE && navigator.canShare && navigator.canShare({ files })) {
+    navigator.share({ files, title: files.length > 1 ? "족보 파일" : files[0].name })
+      .then(() => onNote && onNote(""))          /* 공유가 끝났으면 안내를 지운다 */
+      .catch((e) => {
+        if (e && e.name === "AbortError") return;      // 사용자가 취소한 것
+        /* 용량이 크면 한 번에 못 넘기는 기기가 있다. 목록의 ↓ 를 하나씩 누르면
+           그때마다 새 제스처라 공유가 다시 열린다. */
+        linkSave(list);
+        onNote && onNote(list.length > 1
+          ? "한 번에 넘기지 못했습니다. 위 목록의 ↓ 를 하나씩 눌러 주세요."
+          : "공유가 막혀 있어 내려받기로 넘겼습니다.");
+      });
+    return "share";
+  }
+  linkSave(list);
+  return "link";
+}
+
 /* ── 상태 ─────────────────────────────────────────────────────── */
 /* RAW 는 파일별 원본 추출 결과, BANK 는 그것을 합쳐 중복을 정리한 것.
    파일 하나만 지워도 나머지가 정확히 복원되도록 원본을 따로 들고 있는다. */
-let RAW = {}, BANK = [], VERDICTS = [], LECNAME = "";
+let RAW = {}, BANK = [], VERDICTS = [], LECNAME = "", DONE = [];
 
 const setStep = (n, state) => {
   const c = $("c" + n);
   c.classList.remove("locked", "active", "done");
   if (state) c.classList.add(state);
 };
-const err = (id, msg) => { $(id).textContent = msg || ""; };
+const err = (id, msg) => { $(id).textContent = msg || ""; $(id).classList.remove("info"); };
+/* 오류가 아닌 안내 (내려받기 방식 설명 등) */
+const info = (id, msg) => { $(id).textContent = msg || ""; $(id).classList.toggle("info", !!msg); };
 
 /* ── 1. 족보 등록 ─────────────────────────────────────────────── */
 /* 파서를 고쳐도 이미 등록된 파일은 예전 결과 그대로 남는다. 파일마다 어느 판으로
@@ -712,8 +765,12 @@ function renderProject() {
       <button class="x" data-i="${i}" aria-label="${esc(f.name)} 내려받기" title="내려받기">↓</button>
     </li>`));
   pf.innerHTML = rows.join("");
-  pf.querySelectorAll(".x").forEach((b) => { b.onclick = () => saveMade(+b.dataset.i); });
+  pf.querySelectorAll(".x").forEach((b) => { b.onclick = () => handOff([MADE[+b.dataset.i]], (m) => info("e2", m)); });
 
+  $("dlall").hidden = !MADE.length;
+  $("dlhint").hidden = !MADE.length || !IS_APPLE;
+  if (MADE.length) $("dlall").textContent =
+    MADE.length > 1 ? `색인 ${MADE.length}개 한 번에 받기` : "색인 파일 받기";
   const ready = asis.length > 0 || MADE.length > 0;
   $("pn").hidden = !ready;
   $("cpins").hidden = !ready;
@@ -722,17 +779,11 @@ function renderProject() {
   $("mkidx").hidden = !need.length;
 }
 
-function saveMade(i) {
-  const f = MADE[i]; if (!f) return;
-  const url = URL.createObjectURL(new Blob([f.bytes], { type: "application/pdf" }));
-  try {
-    const a = document.createElement("a");
-    a.href = url; a.download = f.name;
-    document.body.appendChild(a); a.click(); a.remove();
-  } catch (e) { /* 아래 새 탭으로 대체 */ }
-  window.open(url, "_blank");
-  setTimeout(() => URL.revokeObjectURL(url), 600000);
-}
+$("dlall").onclick = () => {
+  info("e2", "");
+  const how = handOff(MADE, (m) => info("e2", m));
+  if (how === "link" && MADE.length > 1) info("e2", `${MADE.length}개를 차례로 내려받습니다.`);
+};
 
 $("mkidx").onclick = async () => {
   err("e2", "");
@@ -876,22 +927,15 @@ $("mk").onclick = async () => {
     const { bytes, warnings } = await buildPDF(picks, LECNAME.replace(/\.pdf$/i, ""));
     if (warnings.length) err("e4", warnings.join("\n"));
     const name = (LECNAME.replace(/\.pdf$/i, "") || "족보") + " 발췌.pdf";
-    const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+    DONE = [{ name, bytes }];
 
-    // iOS 사파리는 <a download> 를 지원하지만, 샌드박스에 따라 막히기도 한다.
-    // 그래서 '새 탭에서 열기' 버튼을 항상 함께 남겨 둔다 — 사파리가 PDF를 그려 주면
-    // 공유 시트로 '파일에 저장' 할 수 있어 어느 환경에서든 통한다.
-    try {
-      const a = document.createElement("a");
-      a.href = url; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-    } catch (e) { /* 아래 열기 버튼으로 대체 */ }
-
-    const open = $("op");
-    open.hidden = false;
-    open.onclick = () => window.open(url, "_blank");
+    /* 만들기(오래 걸림)와 받기를 나눈다. 공유 시트는 방금 누른 버튼에서만 열린다. */
+    const get = $("op");
+    get.hidden = false;
+    $("dlhint4").hidden = !IS_APPLE;
+    get.onclick = () => { info("e4", ""); handOff(DONE, (m) => info("e4", m)); };
     $("dl4").textContent = picks.length + "문제 · " + (bytes.length / 1048576).toFixed(1) + "MB";
-    setTimeout(() => URL.revokeObjectURL(url), 600000);
+    if (!IS_APPLE) linkSave(DONE);              // 데스크톱은 바로 내려받아도 안전하다
     btn.textContent = "다시 만들기"; btn.disabled = false;
     setStep(4, "done");
   } catch (e) {
