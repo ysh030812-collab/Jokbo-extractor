@@ -227,35 +227,46 @@
 
 <!-- 2 ─────────────────────────────────────────────── -->
 <section class="card locked" id="c2">
-  <div class="head"><span class="num">2</span><h2>강의안 선택</h2></div>
-  <p class="sub">이번에 공부할 강의안 PDF 하나.</p>
+  <div class="head"><span class="num">2</span><h2>Claude Project 준비</h2></div>
+  <p class="sub">처음 한 번만. 여기서 만든 파일을 Project 지식에 올려 둡니다.</p>
   <div class="body">
-    <label class="drop" for="f2">
-      <span>📘</span><span><b>강의안 PDF 고르기</b>
-        <span class="hint">이름은 아무래도 괜찮습니다</span></span>
-    </label>
-    <input type="file" id="f2" accept="application/pdf">
+    <button class="btn" id="mkidx">Project에 올릴 파일 만들기</button>
+    <div class="bar" id="b2" hidden><i></i></div>
     <div class="stat" id="s2"></div>
+    <ul class="files" id="pf"></ul>
     <div class="err" id="e2"></div>
+    <div class="note" id="pn" hidden>
+      <b>Claude 앱에서</b>
+      <ol>
+        <li>Project를 하나 만들고 위 파일을 <b>지식(Knowledge)</b>에 전부 올립니다.</li>
+        <li>아래 지시문을 복사해 Project <b>커스텀 지시</b>에 붙여넣습니다.</li>
+      </ol>
+    </div>
+    <button class="btn ghost" id="cpins" hidden style="margin-top:10px">Project 지시문 복사하기</button>
   </div>
 </section>
 
 <!-- 3 ─────────────────────────────────────────────── -->
 <section class="card locked" id="c3">
-  <div class="head"><span class="num">3</span><h2>Claude에 물어보기</h2></div>
-  <p class="sub">복사 → Claude 앱 → 답변 복사 → 돌아와서 붙여넣기.</p>
+  <div class="head"><span class="num">3</span><h2>판정 결과 붙여넣기</h2></div>
+  <p class="sub">Project 대화에 강의안 PDF만 첨부하면 됩니다.</p>
   <div class="body">
-    <button class="btn" id="cp">질문 복사하기</button>
     <div class="note">
-      <b>Claude 앱에서</b>
+      <b>Claude Project에서</b>
       <ol>
         <li>새 대화를 열고 <b>강의안 PDF를 첨부</b>합니다.</li>
-        <li>복사한 질문을 붙여넣고 보냅니다.</li>
+        <li>“이 강의안으로 풀 수 있는 기출 골라줘” 라고 보냅니다.</li>
         <li>답변 맨 아래 <b>JSON 한 덩어리</b>를 복사해 옵니다.</li>
       </ol>
     </div>
     <textarea id="ta" placeholder="Claude 답변을 여기에 붙여넣으세요"></textarea>
     <button class="btn ghost" id="rd" style="margin-top:10px">답변 읽기</button>
+    <label class="drop" for="f2" style="margin-top:10px">
+      <span>📘</span><span><b>강의안 PDF 고르기</b>
+        <span class="hint">결과 PDF 표지 제목에만 씁니다 — 건너뛰어도 됩니다</span></span>
+    </label>
+    <input type="file" id="f2" accept="application/pdf">
+    <div class="stat" id="s3"></div>
     <div class="err" id="e3"></div>
   </div>
 </section>
@@ -276,6 +287,7 @@
 <footer>
   풀이 슬라이드는 3장을 한 페이지에 모아 붙이고, 시험지 DOCX는 문제를 다시 조판합니다.<br>
   연도 최신순으로 정렬되며 표지와 구분 페이지가 들어갑니다.<br>
+  판정은 Claude Project가 맡습니다 — 그림으로만 된 문제도 눈으로 보고 고릅니다.<br>
   파일은 브라우저 안에서만 처리되며 어디에도 전송되지 않습니다.
 </footer>
 </div>

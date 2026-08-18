@@ -18,5 +18,7 @@ venv/
 # 테스트 생성물 (tests/make_fixtures.py, make_e2e_inputs.py 로 다시 만든다)
 tests/fixtures/
 tests/e2e_out.pdf
+tests/e2e_project_out.pdf
+tests/e2e_index_out.pdf
 tests/e2e_top.png
 node_modules

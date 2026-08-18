@@ -5,11 +5,10 @@ import { fileURLToPath } from 'url';
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'src');
 const src = fs.readFileSync(path.join(SRC, 'app_js.js'), 'utf8');
 const cut = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b); if (i<0||j<0) throw Error('cut fail '+a); return src.slice(i, j); };
-const code = cut('const RE_MARK', '/* ── BM25')
-           + cut('const WORD =', '/* ── 상태')
+const code = cut('const RE_MARK', '/* ── 상태')
            + cut('function grabJSON', '\n$("rd")');
 const M = {};
-new Function('exports', code + '\nObject.assign(exports,{scanStarts,blocksOf,parseName,toks,bm25,grabJSON});')(M);
+new Function('exports', code + '\nObject.assign(exports,{scanStarts,blocksOf,parseName,grabJSON});')(M);
 
 // 실제 2023 풀이 텍스트 (드라이브에서 읽은 구조 그대로)
 const P2023 = [
@@ -51,15 +50,6 @@ ck('파일명 파싱', M.parseName('2023 감면 기말 풀이.pdf'), {year:2023,
 ck('파일명 파싱(중간)', M.parseName('2021 병리 중간.docx'), {year:2021,term:'중간',subject:'병리'});
 ck('파일명 파싱(불가)', M.parseName('강의안 73.pdf'), null);
 
-const docs = [
-  {id:'a', text:'7. 기관지 수축 천식 COPD zanamivir neuraminidase inhibitor'},
-  {id:'b', text:'9. 조충의 성충에서 세포분열 두절 경부 편절'},
-  {id:'c', text:'6. 역전사효소 abacavir lamivudine tenofovir ibalizumab'},
-];
-const hits = M.bm25('Antiviral agents zanamivir neuraminidase inhibitor 천식 bronchospasm', docs, 2);
-ck('BM25 관련 문제 상위', hits[0].id, 'a');
-ck('BM25 무관 문제 제외', hits.some(h=>h.id==='b'), false);
-
 ck('JSON 코드블록 추출',
    M.grabJSON('설명입니다\n```json\n[{"id":"x","verdict":"solvable"}]\n```\n끝'),
    [{id:'x',verdict:'solvable'}]);
@@ -71,7 +61,7 @@ ck('JSON 없음', M.grabJSON('그냥 문장'), null);
 // ── NFD(자모 분리) 파일명 회귀 테스트 ──────────────────────────
 const src2 = fs.readFileSync(path.join(SRC, 'app_js.js'), 'utf8');
 const N = {};
-new Function('exports', src2.slice(src2.indexOf('const nfc ='), src2.indexOf('/* ── BM25')) +
+new Function('exports', src2.slice(src2.indexOf('const nfc ='), src2.indexOf('/* ── 상태')) +
   '\nObject.assign(exports,{parseName,whyNoParse,nfc});')(N);
 console.log('\n--- NFD 파일명 ---');
 for (const base of ['2020 감면 기말 풀이.pdf','2023 감면 기말.docx','2021 병리 중간 풀이.pdf']) {

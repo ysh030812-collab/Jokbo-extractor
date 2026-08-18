@@ -247,7 +247,7 @@ function decorQuestion(q, slots, pageNo, part) {
     }
     g.fillStyle = ACC; roundRect(g, 18, 15, 3, 15, 1.5); g.fill();
     g.font = `700 13.5px ${FONT}`; g.fillStyle = INK; g.textBaseline = "middle";
-    const head = `${q.year} ${q.term}  ${q.qnum}번`;
+    const head = `${q.year} ${q.term}  ${qlabel(q)}`;
     g.fillText(head, 29, 23);
     let x = 29 + g.measureText(head).width + 9;
     const [txt, fg, bg] = VLABEL[q.verdict] || VLABEL.partial;
@@ -282,7 +282,7 @@ function decorDocx(q, data, pageNo, imgBoxes) {
     g.textBaseline = "middle";
     g.fillStyle = ACC; roundRect(g, 18, 15, 3, 15, 1.5); g.fill();
     g.font = `700 13.5px ${FONT}`; g.fillStyle = INK;
-    const head = `${q.year} ${q.term}  ${q.qnum}번`;
+    const head = `${q.year} ${q.term}  ${qlabel(q)}`;
     g.fillText(head, 29, 23);
     let hx = 29 + g.measureText(head).width + 9;
     const [txt, fg, bg] = VLABEL[q.verdict] || VLABEL.partial;
@@ -478,4 +478,150 @@ async function buildPDF(picks, title) {
     }
   }
   return { bytes: await out.save(), warnings };
+}
+
+/* ── Claude Project 지식용 '문제 색인' PDF ────────────────────────
+   시험지 DOCX 가 없는 연도는 풀이 PDF 밖에 없다. 그런데 풀이 PDF 는 26~37MB,
+   500쪽 가까이 돼서 Project 에 통째로 못 올린다 (요청 32MB · 100쪽 한도).
+   해설 슬라이드를 빼고 '문제 화면'만 남기면 1/3 로 줄고, 쪽마다 id 를 찍어
+   두면 Claude 가 어느 문제인지 그대로 옮겨 적을 수 있다.
+   글자가 없는 캡처 슬라이드는 일부러 남긴다 — 그래야 그림 문제가 살아난다. */
+const IDX_BAND = 26;                       // 쪽마다 얹는 id 띠의 높이(pt)
+const IDX_MAX_BYTES = 20 * 1024 * 1024;    // Project 업로드 여유분
+
+/* 쪽 위에 얹는 id 띠 */
+function decorStamp(human, id, w) {
+  return (g) => {
+    g.fillStyle = "#FFFFFF"; g.fillRect(0, 0, w, IDX_BAND);
+    g.fillStyle = ACC; g.fillRect(0, IDX_BAND - 1.6, w, 1.6);
+    g.textBaseline = "middle";
+    g.font = `700 12.5px ${FONT}`; g.fillStyle = INK;
+    g.fillText(human, 13, IDX_BAND / 2 - 1);
+    const x = 13 + g.measureText(human).width + 11;
+    g.font = `600 11.5px ${FONT}`; g.fillStyle = "#1B64DA";
+    g.fillText(id, x, IDX_BAND / 2 - 1);
+  };
+}
+
+/* 색인 파일 표지 — Claude 가 이 파일이 무엇인지 알 수 있게 적어 둔다 */
+function decorIdxCover(meta, nums, part, total) {
+  return (g) => {
+    g.fillStyle = "#FFFFFF"; g.fillRect(0, 0, PW, PH);
+    g.fillStyle = "#F2F6FC"; g.beginPath(); g.arc(PW - 90, 90, 190, 0, 7); g.fill();
+    g.textBaseline = "alphabetic";
+    g.font = `800 14px ${FONT}`; g.fillStyle = ACC;
+    g.fillText("기출 문제 색인", 64, 96);
+    g.font = `800 30px ${FONT}`; g.fillStyle = INK;
+    g.fillText(`${meta.year} ${meta.subject} ${meta.term}`, 64, 140);
+    g.font = `500 13px ${FONT}`; g.fillStyle = "#4E5968";
+    const lines = [
+      `${total > 1 ? `${part} / ${total} 번째 파일 · ` : ""}문제 ${nums.length}개`,
+      "풀이 슬라이드에서 문제 화면만 뽑은 것입니다. 해설 슬라이드는 들어 있지 않습니다.",
+      "각 쪽 위에 id 가 찍혀 있습니다. 답할 때는 그 id 를 그대로 옮겨 적으세요.",
+      "번호가 p 로 시작하는 것은 문제 번호가 그림 안에만 있어 기계가 읽지 못한 쪽입니다. 그대로 쓰면 됩니다.",
+    ];
+    let y = 176;
+    for (const l of lines) { for (const s of wrapText(g, l, PW - 150)) { g.fillText(s, 64, y); y += 19; } }
+    y += 12;
+    g.font = `600 12px ${FONT}`; g.fillStyle = "#8B95A1";
+    g.fillText("수록된 문제", 64, y); y += 18;
+    g.font = `500 12px ${FONT}`; g.fillStyle = "#4E5968";
+    for (const s of wrapText(g, nums.join(", "), PW - 150)) {
+      if (y > PH - 30) break;
+      g.fillText(s, 64, y); y += 17;
+    }
+  };
+}
+
+/* 고른 쪽들을 한도에 맞춰 여러 파일로 나눠 만든다 */
+async function composeIndex(src, meta, keep, perFile) {
+  const chunks = [];
+  for (let i = 0; i < keep.length; i += perFile) chunks.push(keep.slice(i, i + perFile));
+  const out = [];
+  for (let c = 0; c < chunks.length; c++) {
+    const chunk = chunks[c];
+    const doc = await PDFLib.PDFDocument.create();
+    const nums = chunk.map((k) => k.label);
+    await addDecor(doc, decorIdxCover(meta, nums, c + 1, chunks.length));
+
+    const srcPages = chunk.map((k) => src.getPage(k.page));
+    const embs = await doc.embedPages(srcPages);
+    for (let i = 0; i < chunk.length; i++) {
+      const sp = srcPages[i], emb = embs[i];
+      const rot = ((sp.getRotation().angle % 360) + 360) % 360;
+      let w = emb.width, h = emb.height;
+      if (rot === 90 || rot === 270) { const t = w; w = h; h = t; }
+      const page = doc.addPage([w, h + IDX_BAND]);
+      placePage(page, emb, sp, [0, 0, w, h]);
+      const png = await decorPng(
+        decorStamp(`${meta.year} ${meta.term} ${chunk[i].label}`, chunk[i].id, w), w, IDX_BAND, 3);
+      page.drawImage(await doc.embedPng(png), { x: 0, y: h, width: w, height: IDX_BAND });
+    }
+    out.push({ bytes: await doc.save(), pages: doc.getPageCount(), nums });
+  }
+  return out;
+}
+
+/* 풀이 PDF 한 개 → Project 에 올릴 색인 파일들 */
+async function buildProjectIndex(fileName, items, onProgress) {
+  const blob = await DB.get("files", fileName);
+  if (!blob) throw new Error(`원본 파일이 없습니다: ${fileName}`);
+  const meta = items[0];
+  /* 스탬프에 찍는 id 는 문제 은행의 id 를 그대로 쓴다. 여기서 새로 만들면
+     Claude 가 돌려준 id 를 웹앱이 못 찾는 일이 생긴다. */
+  const keep = [];
+  for (const q of items) for (const page of (q.qp || [q.s])) keep.push({ page, id: q.id, label: qlabel(q) });
+  keep.sort((a, b) => a.page - b.page);
+  if (!keep.length) throw new Error(`${fileName}: 문제 화면을 찾지 못했습니다`);
+
+  const src = await PDFLib.PDFDocument.load(await blob.arrayBuffer());
+  /* 쪽수 한도(100)부터 맞추고, 그래도 파일이 크면 반씩 줄여 다시 나눈다 */
+  let perFile = 90, made = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    made = await composeIndex(src, meta, keep, perFile);
+    onProgress && onProgress((attempt + 1) / 4);
+    if (made.every((m) => m.bytes.length <= IDX_MAX_BYTES) || perFile <= 12) break;
+    perFile = Math.max(12, Math.floor(perFile / 2));
+  }
+  const base = `${meta.year} ${meta.subject} ${meta.term} 문제색인`;
+  return made.map((m, i) => ({
+    name: made.length > 1 ? `${base} ${i + 1}.pdf` : `${base}.pdf`,
+    bytes: m.bytes, pages: m.pages, count: m.nums.length,
+  }));
+}
+
+/* Project 커스텀 지시문 — 판정 기준을 여기에 둔다 */
+function projectInstructions(docxFiles, idxFiles) {
+  const lines = [];
+  if (docxFiles.length) lines.push(`- 시험지 파일 (${docxFiles.join(", ")}) — 문제 전문이 들어 있습니다.\n  id 는 파일 이름에서 만듭니다: 연도-학기-과목-번호 (예: 2023-기말-감면-6)`);
+  if (idxFiles.length) lines.push(`- 문제 색인 파일 (${idxFiles.join(", ")}) — 시험지가 없는 연도라 풀이 슬라이드에서\n  문제 화면만 뽑은 것입니다. 각 쪽 위에 id 가 찍혀 있으니 **그대로** 옮겨 적으세요.\n  id 의 번호가 p 로 시작하면(예: 2020-기말-감면-p14) 문제 번호가 그림 안에만 있어\n  기계가 읽지 못한 쪽입니다. 그림에 보이는 번호로 바꾸지 말고 p 가 붙은 id 를 그대로 쓰세요.`);
+
+  return `이 Project 에는 의과대학 기출 족보가 들어 있습니다.
+대화마다 강의안 PDF 한 개가 첨부됩니다. 그 강의안으로 **풀 수 있는** 기출문제만 골라 주세요.
+
+## 지식 파일
+${lines.join("\n")}
+
+## 판단 기준
+단어가 겹치는지가 아니라, **강의안 내용만으로 답을 고를 근거가 있는지**로 판단합니다.
+
+- solvable : 강의안에 답을 고를 근거가 다 있음
+- partial : 개념은 있으나 문제가 요구하는 세부(약제명·수치·예외)가 강의안에 없음
+- unrelated : 무관하거나 다른 강의 범위
+
+애매하면 partial 을 적극적으로 쓰세요. 억지로 둘로 가르지 마세요.
+
+## 그림으로 된 문제
+글자가 거의 없고 그림·사진·도표뿐인 문제도 **반드시 같이 검토하세요.**
+그림을 직접 보고 판단하고, 글이 없다는 이유로 건너뛰거나 unrelated 로 두지 마세요.
+강의안에 같은 그림이나 비슷한 그림이 있으면 solvable 의 강한 근거입니다.
+
+## 답변 형식
+고른 이유를 간단히 설명한 뒤, **맨 마지막에** 아래 형식의 JSON 배열 하나만 코드블록으로 넣어 주세요.
+solvable 과 partial 을 모두 넣고 unrelated 는 넣지 마세요.
+pages 는 근거가 된 강의안 쪽수, why 는 한 줄 이유입니다.
+
+\`\`\`json
+[{"id":"2023-기말-감면-6","verdict":"solvable","pages":"8-9","why":"역전사효소 억제제 목록이 강의안에 그대로 있음"}]
+\`\`\``;
 }
