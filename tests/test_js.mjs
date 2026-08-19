@@ -5,10 +5,10 @@ import { fileURLToPath } from 'url';
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'src');
 const src = fs.readFileSync(path.join(SRC, 'app_js.js'), 'utf8');
 const cut = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b); if (i<0||j<0) throw Error('cut fail '+a); return src.slice(i, j); };
-const code = cut('const RE_MARK', '/* ── 상태')
+const code = cut('const RE_MARK', '/* ── 만든 파일을')
            + cut('function grabJSON', '\n$("rd")');
 const M = {};
-new Function('exports', code + '\nObject.assign(exports,{scanStarts,blocksOf,parseName,grabJSON});')(M);
+new Function('exports', code + '\nObject.assign(exports,{scanStarts,blocksOf,parseName,examKey,examName,termOrd,grabJSON});')(M);
 
 // 실제 2023 풀이 텍스트 (드라이브에서 읽은 구조 그대로)
 const P2023 = [
@@ -49,6 +49,13 @@ ck('블록 페이지 범위', M.blocksOf(P2023).slice(0,2).map(b=>[b.s,b.e]), [[
 ck('파일명 파싱', M.parseName('2023 감면 기말 풀이.pdf'), {year:2023,term:'기말',subject:'감면'});
 ck('파일명 파싱(중간)', M.parseName('2021 병리 중간.docx'), {year:2021,term:'중간',subject:'병리'});
 ck('파일명 파싱(불가)', M.parseName('강의안 73.pdf'), null);
+
+// 중간/기말 구분이 없는 시험 (2023 호흡기계 풀이.pdf 처럼 한 학기 한 번만 보는 과목)
+ck('학기 없는 시험', M.parseName('2023 호흡기계 풀이.pdf'), {year:2023,term:'',subject:'호흡기계'});
+ck('학기 없는 시험(docx)', M.parseName('2023 호흡기계.docx'), {year:2023,term:'',subject:'호흡기계'});
+ck('과목이 여러 낱말', M.parseName('2023 감염과 면역 기말 풀이.pdf'), {year:2023,term:'기말',subject:'감염과 면역'});
+ck('과목만 있고 연도 없음', M.parseName('호흡기계 풀이.pdf'), null);
+ck('과목이 비면 건너뛴다', M.parseName('2023 풀이.pdf'), null);
 
 ck('JSON 코드블록 추출',
    M.grabJSON('설명입니다\n```json\n[{"id":"x","verdict":"solvable"}]\n```\n끝'),

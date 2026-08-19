@@ -34,7 +34,8 @@ const put = async (sel, names) => {
 };
 
 /* ── 1. 족보 등록 : 시험지가 있는 연도 + 없는 연도(2020) 를 섞는다 ── */
-const inputs = ['2020 감면 기말 풀이.pdf', '2023 감면 기말 풀이.pdf', '2023 감면 기말.docx', '2022 감면 기말.docx'];
+const inputs = ['2020 감면 기말 풀이.pdf', '2023 감면 기말 풀이.pdf', '2023 감면 기말.docx',
+  '2022 감면 기말.docx', '2024 호흡기계.docx'];
 console.log('■ 입력 :', inputs.map((n) => `${n} ${(fs.statSync(path.join(IN, n)).size / MB).toFixed(1)}MB`).join(' / '));
 await put('#f1', inputs);
 await pg.waitForFunction((n) => document.querySelectorAll('#fl .fi').length === n, inputs.length, { timeout: 300000 });
@@ -43,19 +44,19 @@ console.log('■ 등록 :', (await txt('#s1')).replace(/\n/g, ' | '));
 /* ── 2. 파일 하나 삭제 → 나머지가 그대로 살아 있는가 ──────────── */
 const before = await pg.evaluate(() => document.querySelector('#s1 .pill').innerText);
 await pg.click('#fl .fi:has-text("2022 감면 기말.docx") .x');
-await pg.waitForFunction(() => document.querySelectorAll('#fl .fi').length === 3);
+await pg.waitForFunction(() => document.querySelectorAll('#fl .fi').length === 4);
 console.log('\n■ 2022 삭제 :', before, '→', (await txt('#s1')).replace(/\n/g, ' | '));
 for (const r of await pg.$$eval('#fl .fi', (ls) => ls.map((l) => l.innerText.replace(/\n/g, ' ')))) console.log('   ', r);
 
 /* 되돌리기 — 다시 올리면 원상 복구되어야 한다 */
 await put('#f1', ['2022 감면 기말.docx']);
-await pg.waitForFunction(() => document.querySelectorAll('#fl .fi').length === 4);
+await pg.waitForFunction(() => document.querySelectorAll('#fl .fi').length === 5);
 console.log('■ 다시 등록 :', (await txt('#s1')).replace(/\n/g, ' | '));
 
 /* 새로고침 후에도 남아 있는가 */
 await pg.reload();
 await pg.evaluate(() => { const o = URL.createObjectURL; URL.createObjectURL = (x) => (window.__blob = x, o(x)); });
-await pg.waitForFunction(() => document.querySelectorAll('#fl .fi').length === 4);
+await pg.waitForFunction(() => document.querySelectorAll('#fl .fi').length === 5);
 console.log('■ 새로고침 후 :', (await txt('#s1')).replace(/\n/g, ' | '), '| 카드1', await pg.$eval('#c1', (e) => e.className));
 
 /* ── 3. Project 준비 ─────────────────────────────────────────── */
@@ -118,6 +119,7 @@ const answer = JSON.stringify([
   { id: '2020-기말-감면-p20~22', no: '7번', verdict: 'partial', pages: '', why: '번호 뒤에 번을 붙여 보내도 된다' },
   { id: '2023-기말-감면-87', verdict: 'solvable', pages: '5', why: '시험지 DOCX 쪽' },
   { id: '2022-기말-감면-144', verdict: 'solvable', pages: '6', why: '시험지 DOCX 쪽' },
+  { id: '2024-호흡기계-106', verdict: 'solvable', pages: '2', why: '중간/기말 구분이 없는 시험' },
   { id: '9999-기말-감면-1', verdict: 'solvable', pages: '', why: '없는 연도' },
   { id: '2020-기말-감면-p9999', verdict: 'solvable', pages: '', why: '없는 쪽' },
 ]);

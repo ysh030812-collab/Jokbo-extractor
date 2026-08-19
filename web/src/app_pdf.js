@@ -247,7 +247,7 @@ function decorQuestion(q, slots, pageNo, part) {
     }
     g.fillStyle = ACC; roundRect(g, 18, 15, 3, 15, 1.5); g.fill();
     g.font = `700 13.5px ${FONT}`; g.fillStyle = INK; g.textBaseline = "middle";
-    const head = `${q.year} ${q.term}  ${qlabel(q)}`;
+    const head = `${examName(q)}  ${qlabel(q)}`;
     g.fillText(head, 29, 23);
     let x = 29 + g.measureText(head).width + 9;
     const [txt, fg, bg] = VLABEL[q.verdict] || VLABEL.partial;
@@ -282,7 +282,7 @@ function decorDocx(q, data, pageNo, imgBoxes) {
     g.textBaseline = "middle";
     g.fillStyle = ACC; roundRect(g, 18, 15, 3, 15, 1.5); g.fill();
     g.font = `700 13.5px ${FONT}`; g.fillStyle = INK;
-    const head = `${q.year} ${q.term}  ${qlabel(q)}`;
+    const head = `${examName(q)}  ${qlabel(q)}`;
     g.fillText(head, 29, 23);
     let hx = 29 + g.measureText(head).width + 9;
     const [txt, fg, bg] = VLABEL[q.verdict] || VLABEL.partial;
@@ -348,7 +348,7 @@ function decorCover(title, n, years) {
   };
 }
 
-function decorDivider(year, term) {
+function decorDivider(year, rest) {
   return (g) => {
     g.fillStyle = "#F7F8FA"; g.fillRect(0, 0, PW, PH);
     g.textBaseline = "alphabetic";
@@ -358,7 +358,7 @@ function decorDivider(year, term) {
     g.fillStyle = ACC; roundRect(g, 66, PH / 2 + 34, 92, 6, 3); g.fill();
     g.fillStyle = "#C6CDD6"; roundRect(g, 166, PH / 2 + 34, 34, 6, 3); g.fill();
     g.font = `600 19px ${FONT}`; g.fillStyle = MUTE;
-    g.fillText(term, 70 + w + 16, PH / 2 + 12);
+    if (rest) g.fillText(rest, 70 + w + 16, PH / 2 + 12);   // 학기가 없는 시험도 있다
   };
 }
 
@@ -440,8 +440,11 @@ async function buildPDF(picks, title) {
   let lastKey = null, pageNo = 1;
 
   for (const q of picks) {
-    const key = q.year + q.term;
-    if (key !== lastKey) { await addDecor(out, decorDivider(q.year, q.term)); lastKey = key; }
+    const key = examKey(q);
+    if (key !== lastKey) {
+      await addDecor(out, decorDivider(q.year, [q.subject, q.term].filter(Boolean).join(" ")));
+      lastKey = key;
+    }
 
     if (q.source === "docx") {
       if (!docxCache.has(q.id)) docxCache.set(q.id, await DB.get("docx", q.id));
@@ -511,7 +514,7 @@ function decorStamp(human, id, w) {
 
 /* 조각 표지 — Claude 가 이 파일이 무엇이고 어떻게 답해야 하는지 알 수 있게 */
 function decorIdxCover(meta, from, to, part, total) {
-  const key = `${meta.year}-${meta.term}-${meta.subject}`;
+  const key = examKey(meta);
   return (g) => {
     g.fillStyle = "#FFFFFF"; g.fillRect(0, 0, PW, PH);
     g.fillStyle = "#F2F6FC"; g.beginPath(); g.arc(PW - 90, 90, 190, 0, 7); g.fill();
@@ -519,7 +522,7 @@ function decorIdxCover(meta, from, to, part, total) {
     g.font = `800 14px ${FONT}`; g.fillStyle = ACC;
     g.fillText("기출 풀이 슬라이드", 64, 96);
     g.font = `800 30px ${FONT}`; g.fillStyle = INK;
-    g.fillText(`${meta.year} ${meta.subject} ${meta.term}`, 64, 140);
+    g.fillText(examName(meta), 64, 140);
     g.font = `500 13px ${FONT}`; g.fillStyle = "#4E5968";
     const lines = [
       `${part} / ${total} 번째 조각 · 원본 ${from}~${to}쪽`,
@@ -541,7 +544,7 @@ function decorIdxCover(meta, from, to, part, total) {
 async function composeChunks(src, meta, pages, perFile) {
   const chunks = [];
   for (let i = 0; i < pages.length; i += perFile) chunks.push(pages.slice(i, i + perFile));
-  const key = `${meta.year}-${meta.term}-${meta.subject}`;
+  const key = examKey(meta);
   const out = [];
   for (let c = 0; c < chunks.length; c++) {
     const chunk = chunks[c];
@@ -558,7 +561,7 @@ async function composeChunks(src, meta, pages, perFile) {
       const page = doc.addPage([w, h + IDX_BAND]);
       placePage(page, emb, sp, [0, 0, w, h]);
       const png = await decorPng(
-        decorStamp(`${meta.year} ${meta.term} ${no}쪽`, `${key}-p${no}`, w), w, IDX_BAND, 3);
+        decorStamp(`${examName(meta)} ${no}쪽`, `${key}-p${no}`, w), w, IDX_BAND, 3);
       page.drawImage(await doc.embedPng(png), { x: 0, y: h, width: w, height: IDX_BAND });
     }
     out.push({ bytes: await doc.save(), pages: doc.getPageCount(),
@@ -583,7 +586,7 @@ async function buildProjectChunks(fileName, meta, onProgress) {
     if (made.every((m) => m.bytes.length <= IDX_MAX_BYTES) || perFile <= 12) break;
     perFile = Math.max(12, Math.floor(perFile / 2));
   }
-  const base = `${meta.year} ${meta.subject} ${meta.term} 풀이`;
+  const base = `${examName(meta)} 풀이`;
   return made.map((m, i) => ({
     name: `${base} ${i + 1}.pdf`, bytes: m.bytes, pages: m.pages,
     from: m.from, to: m.to,
@@ -596,7 +599,9 @@ function projectInstructions(docxFiles, chunkFiles) {
   if (docxFiles.length) lines.push(
 `- 시험지 파일 (${docxFiles.join(", ")})
   문제 전문이 들어 있습니다. id 는 파일 이름에서 만듭니다 — 연도-학기-과목-문제번호
-  예: 2023-기말-감면-6`);
+  예: 2023-기말-감면-6
+  중간/기말 구분이 없는 시험은 학기 칸을 빼고 연도-과목-문제번호 로 씁니다
+  예: 2023-호흡기계-12`);
   if (chunkFiles.length) lines.push(
 `- 풀이 슬라이드 조각 (${chunkFiles.join(", ")})
   시험지가 없는 연도라 풀이 파일을 자르기만 한 것입니다. 문제·해설·출처 슬라이드가
@@ -604,6 +609,7 @@ function projectInstructions(docxFiles, chunkFiles) {
   한 문제는 보통 슬라이드 두세 장으로 이어집니다. 그 문제의 슬라이드가 **시작하는 쪽과
   끝나는 쪽**을 ~ 로 이어 적으세요 — 연도-학기-과목-p시작쪽~끝쪽 (쪽번호 앞에 p 를 붙입니다)
   예: 2020-기말-감면-p442~444  (한 장뿐이면 2020-기말-감면-p442)
+  중간/기말 구분이 없는 시험은 학기 칸을 뺍니다 — 예: 2023-호흡기계-p88~90
   id 에는 쪽 위에 찍힌 번호만 쓰고, 슬라이드 안에 보이는 문제 번호로 바꾸지 마세요.
   대신 슬라이드에 보이는 문제 번호를 no 항목에 따로 적어 주세요 (예: "no": "268").
   그림뿐이라 번호가 안 보이면 no 는 생략하면 됩니다.`);

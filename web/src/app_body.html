@@ -119,6 +119,7 @@
     border-radius:7px;padding:4px 8px;white-space:nowrap;
   }
   .hint{display:block;color:var(--ink-3);font-size:12.5px;font-weight:500}
+  .hint code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 
   textarea{
     width:100%;min-height:140px;padding:14px;font:inherit;font-size:14.5px;
@@ -210,7 +211,8 @@
     <label class="drop" for="f1">
       <span>📄</span><span><b>족보 파일 고르기</b> · 여러 개 한꺼번에
         <span class="fmt"><code>2023 감면 기말 풀이.pdf</code><code>2023 감면 기말.docx</code></span>
-        <span class="hint">연도 · 과목 · 중간/기말 순서로, 풀이 슬라이드는 끝에 ‘풀이’</span></span>
+        <span class="hint">연도 · 과목 · 중간/기말 순서로, 풀이 슬라이드는 끝에 ‘풀이’<br>
+          중간/기말 구분이 없는 시험은 빼면 됩니다 — <code>2023 호흡기계 풀이.pdf</code></span></span>
     </label>
     <input type="file" id="f1" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple>
     <div class="bar" id="b1" hidden><i></i></div>

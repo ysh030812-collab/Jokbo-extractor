@@ -58,6 +58,8 @@ doc.save(f"{OUT}/73. Antiviral agents (김채균).pdf", garbage=4, deflate=True)
 doc.close()
 
 shutil.copy(str(HERE / "fixtures" / "real_2023.docx"), f"{OUT}/2023 감면 기말.docx")
+# 중간/기말 구분이 없는 시험 (블록 강의처럼 한 번만 보는 과목)
+shutil.copy(str(HERE / "fixtures" / "real2022.docx"), f"{OUT}/2024 호흡기계.docx")
 shutil.copy(str(HERE / "fixtures" / "real2022.docx"), f"{OUT}/2022 감면 기말.docx")
 for f in sorted(os.listdir(OUT)):
     print(f"{os.path.getsize(f'{OUT}/{f}')/1024:8.0f} KB  {f}")

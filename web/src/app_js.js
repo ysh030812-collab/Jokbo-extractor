@@ -2,7 +2,6 @@
 (function () {
 "use strict";
 const $ = (id) => document.getElementById(id);
-const TERM_ORD = { "기말": 0, "중간": 1 };
 
 /* ── IndexedDB ────────────────────────────────────────────────── */
 const DB = (() => {
@@ -156,22 +155,37 @@ const qlabel = (q) => (q.no ? `${q.no}번`
    반드시 NFC 로 정규화한 뒤에 비교해야 한다. */
 const nfc = (s) => (s || "").normalize("NFC");
 
+/* 이름 규칙:  {연도} {과목} [{중간|기말}] [풀이]
+     2023 감면 기말 풀이.pdf     2023 감면 기말.docx
+     2023 호흡기계 풀이.pdf      2023 호흡기계.docx     ← 중간/기말이 없는 시험
+   과목은 여러 낱말이어도 된다 (2023 감염과 면역 기말). */
+const RE_YEAR = /(?:19|20)\d{2}/;
+
 function parseName(raw) {
-  const name = nfc(raw);
-  const y = name.match(/(?:19|20)\d{2}/);
+  const name = nfc(raw).replace(/\.[A-Za-z0-9]+$/, "").trim();
+  const y = name.match(RE_YEAR);
   if (!y) return null;
-  const term = name.includes("중간") ? "중간" : name.includes("기말") ? "기말" : null;
-  if (!term) return null;
-  const s = name.match(/(?:19|20)\d{2}\s+(.+?)\s+(?:중간|기말)/);
-  return { year: +y[0], term, subject: s ? s[1].trim() : "" };
+  let rest = name.slice(name.indexOf(y[0]) + 4).replace(/\s*풀이\s*$/, "").trim();
+  const tm = rest.match(/\s*(중간|기말)\s*$/);          // 없으면 단일 시험
+  const term = tm ? tm[1] : "";
+  const subject = (tm ? rest.slice(0, tm.index) : rest).trim();
+  if (!subject) return null;
+  return { year: +y[0], term, subject };
 }
 
 function whyNoParse(raw) {
   const name = nfc(raw);
-  if (!name.match(/(?:19|20)\d{2}/)) return "연도 4자리를 찾지 못함";
-  if (!/중간|기말/.test(name)) return "'중간' 또는 '기말'을 찾지 못함";
-  return "이름 형식을 알아보지 못함";
+  if (!RE_YEAR.test(name)) return "연도 4자리를 찾지 못함";
+  return "연도 뒤에서 과목 이름을 찾지 못함";
 }
+
+/* 시험 하나를 가리키는 열쇠. 학기가 없는 시험도 있으므로 빈 칸은 건너뛴다.
+   2023-기말-감면 / 2023-호흡기계 */
+const examKey = (q) => [q.year, q.term, q.subject].filter(Boolean).join("-");
+/* 화면에 쓰는 시험 이름: 2023 감면 기말 / 2023 호흡기계 */
+const examName = (q) => [q.year, q.subject, q.term].filter(Boolean).join(" ");
+/* 기말 → 중간 → N차 → 학기 없음 순 */
+const termOrd = (t) => (t === "기말" ? 0 : t === "중간" ? 1 : t ? 2 : 3);
 
 /* ── 만든 파일을 기기에 넘기기 ──────────────────────────────────
    아이패드·아이폰 사파리는 blob 에 붙은 <a download> 를 그냥 무시하는 일이 잦고,
@@ -333,7 +347,7 @@ $("f1").onchange = async (ev) => {
       if (!qs.length) { skipped.push(name + " (문제 0개)"); continue; }
       const items = [];
       for (const q of qs) {
-        const id = `${meta.year}-${meta.term}-${meta.subject}-${q.num}`;
+        const id = `${examKey(meta)}-${q.num}`;
         await DB.put("docx", id, { stem: q.stem, presented: q.presented, choices: q.choices, images: q.images });
         items.push({
           id, year: meta.year, term: meta.term, subject: meta.subject,
@@ -358,7 +372,7 @@ $("f1").onchange = async (ev) => {
     if (!blks.length) { skipped.push(name + " (문제 0개)"); continue; }
     await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
     const items = blks.map((b) => ({
-      id: `${meta.year}-${meta.term}-${meta.subject}-${qkey(b)}`,
+      id: `${examKey(meta)}-${qkey(b)}`,
       year: meta.year, term: meta.term, subject: meta.subject,
       qnum: b.qnum, sec: b.sec, page: b.page, ord: b.ord,
       file: name, source: "solution", s: b.s, e: b.e, qp: b.qp,
@@ -373,7 +387,8 @@ $("f1").onchange = async (ev) => {
   setTimeout(() => { $("b1").hidden = true; bar.style.width = "0"; }, 400);
   renderBank();
   if (skipped.length) err("e1", "건너뜀\n· " + skipped.join("\n· ") +
-    "\n이름은 '2023 감면 기말 풀이.pdf' 또는 '2023 감면 기말.docx' 형식이어야 합니다.");
+    "\n이름은 '2023 감면 기말 풀이.pdf' 또는 '2023 감면 기말.docx' 형식이어야 합니다." +
+    "\n중간/기말 구분이 없는 시험은 '2023 호흡기계 풀이.pdf' 처럼 빼면 됩니다.");
 };
 
 $("clr").onclick = async () => {
@@ -393,7 +408,7 @@ function planProject() {
   const haveDocx = new Set(), sol = new Map();
   for (const [name, f] of Object.entries(RAW)) {
     const q = f.items[0]; if (!q) continue;
-    const key = `${q.year}-${q.term}-${q.subject}`;
+    const key = examKey(q);
     if (f.kind === "doc") haveDocx.add(key);
     else sol.set(name, { year: q.year, term: q.term, subject: q.subject, key });
   }
@@ -514,7 +529,7 @@ function grabJSON(s) {
 /* 시험지가 없는 연도는 Claude 가 쪽 범위로 답한다: 2020-기말-감면-p442~444.
    어느 슬라이드가 한 문제인지 코드가 추측하지 않으므로 어긋날 일이 없다.
    쪽번호 앞의 p 는 문제 번호와 헷갈리지 않기 위한 것이다 (…-29 는 29번 문제). */
-const RE_SPAN = /^\s*(\d{4})-(중간|기말)-(.+?)-p(\d{1,4})(?:\s*[~\-–]\s*p?(\d{1,4}))?\s*$/;
+const RE_SPAN = /^\s*(\d{4})-(?:(중간|기말|\d차)-)?(.+?)-p(\d{1,4})(?:\s*[~\-–]\s*p?(\d{1,4}))?\s*$/;
 
 function solutionFileFor(year, term, subject) {
   for (const [name, f] of Object.entries(RAW)) {
@@ -529,7 +544,8 @@ function solutionFileFor(year, term, subject) {
 function spanPick(rawId) {
   const m = RE_SPAN.exec(nfc(rawId || ""));
   if (!m) return null;
-  const [, y, term, subject, a, b] = m;
+  const [, y, term0, subject, a, b] = m;
+  const term = term0 || "";
   const hit = solutionFileFor(+y, term, subject.trim());
   if (!hit) return null;
   const [file, np] = hit;
@@ -537,7 +553,7 @@ function spanPick(rawId) {
   if (to - from > 12) return null;                 // 한 문제가 열 장을 넘지는 않는다
   if (np && (from < 1 || from > np)) return null;  // 원본에 없는 쪽 — 조용히 빠지지 않게
   return {
-    id: `${y}-${term}-${subject.trim()}-p${from}${to > from ? "~" + to : ""}`,
+    id: `${examKey({ year: +y, term, subject: subject.trim() })}-p${from}${to > from ? "~" + to : ""}`,
     year: +y, term, subject: subject.trim(),
     qnum: null, sec: "", page: from, to, ord: from,
     file, source: "solution", s: from - 1, e: to, text: "",
@@ -568,7 +584,8 @@ $("rd").onclick = () => {
         "\n id 는 '2023-기말-감면-6' 이나 '2020-기말-감면-p442~444' 형식이어야 하고," +
         "\n 그 족보가 1단계에 등록돼 있어야 합니다." : ""));
   }
-  VERDICTS.sort((a, b) => b.year - a.year || TERM_ORD[a.term] - TERM_ORD[b.term] || (a.ord ?? a.qnum) - (b.ord ?? b.qnum));
+  VERDICTS.sort((a, b) => b.year - a.year || termOrd(a.term) - termOrd(b.term)
+    || a.subject.localeCompare(b.subject, "ko") || (a.ord ?? a.qnum) - (b.ord ?? b.qnum));
   if (miss.length) err("e3", `문제 은행에 없는 항목 ${miss.length}개는 건너뜁니다 — ${miss.slice(0, 3).join(", ")}${miss.length > 3 ? " …" : ""}`);
   renderVerdicts();
   setStep(3, "done"); setStep(4, "active");
@@ -583,7 +600,7 @@ function renderVerdicts() {
       <input type="checkbox" ${v.verdict === "solvable" ? "checked" : ""}>
       <div>
         <div class="meta">
-          <span class="who">${v.year} ${v.term} ${qlabel(v)}</span>
+          <span class="who">${esc(examName(v))} ${qlabel(v)}</span>
           <span class="kind ${v.source === "docx" ? "doc" : "sol"}">${v.source === "docx" ? "시험지" : "풀이"}</span>
           <span class="tag ${v.verdict}">${LABEL[v.verdict]}</span>
           ${v.pages ? `<span class="tag pg">강의안 ${v.pages}쪽</span>` : ""}

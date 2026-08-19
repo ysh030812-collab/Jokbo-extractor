@@ -119,6 +119,7 @@
     border-radius:7px;padding:4px 8px;white-space:nowrap;
   }
   .hint{display:block;color:var(--ink-3);font-size:12.5px;font-weight:500}
+  .hint code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 
   textarea{
     width:100%;min-height:140px;padding:14px;font:inherit;font-size:14.5px;
@@ -210,7 +211,8 @@
     <label class="drop" for="f1">
       <span>📄</span><span><b>족보 파일 고르기</b> · 여러 개 한꺼번에
         <span class="fmt"><code>2023 감면 기말 풀이.pdf</code><code>2023 감면 기말.docx</code></span>
-        <span class="hint">연도 · 과목 · 중간/기말 순서로, 풀이 슬라이드는 끝에 ‘풀이’</span></span>
+        <span class="hint">연도 · 과목 · 중간/기말 순서로, 풀이 슬라이드는 끝에 ‘풀이’<br>
+          중간/기말 구분이 없는 시험은 빼면 됩니다 — <code>2023 호흡기계 풀이.pdf</code></span></span>
     </label>
     <input type="file" id="f1" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple>
     <div class="bar" id="b1" hidden><i></i></div>
@@ -367,7 +369,6 @@
 (function () {
 "use strict";
 const $ = (id) => document.getElementById(id);
-const TERM_ORD = { "기말": 0, "중간": 1 };
 
 /* ── IndexedDB ────────────────────────────────────────────────── */
 const DB = (() => {
@@ -521,22 +522,37 @@ const qlabel = (q) => (q.no ? `${q.no}번`
    반드시 NFC 로 정규화한 뒤에 비교해야 한다. */
 const nfc = (s) => (s || "").normalize("NFC");
 
+/* 이름 규칙:  {연도} {과목} [{중간|기말}] [풀이]
+     2023 감면 기말 풀이.pdf     2023 감면 기말.docx
+     2023 호흡기계 풀이.pdf      2023 호흡기계.docx     ← 중간/기말이 없는 시험
+   과목은 여러 낱말이어도 된다 (2023 감염과 면역 기말). */
+const RE_YEAR = /(?:19|20)\d{2}/;
+
 function parseName(raw) {
-  const name = nfc(raw);
-  const y = name.match(/(?:19|20)\d{2}/);
+  const name = nfc(raw).replace(/\.[A-Za-z0-9]+$/, "").trim();
+  const y = name.match(RE_YEAR);
   if (!y) return null;
-  const term = name.includes("중간") ? "중간" : name.includes("기말") ? "기말" : null;
-  if (!term) return null;
-  const s = name.match(/(?:19|20)\d{2}\s+(.+?)\s+(?:중간|기말)/);
-  return { year: +y[0], term, subject: s ? s[1].trim() : "" };
+  let rest = name.slice(name.indexOf(y[0]) + 4).replace(/\s*풀이\s*$/, "").trim();
+  const tm = rest.match(/\s*(중간|기말)\s*$/);          // 없으면 단일 시험
+  const term = tm ? tm[1] : "";
+  const subject = (tm ? rest.slice(0, tm.index) : rest).trim();
+  if (!subject) return null;
+  return { year: +y[0], term, subject };
 }
 
 function whyNoParse(raw) {
   const name = nfc(raw);
-  if (!name.match(/(?:19|20)\d{2}/)) return "연도 4자리를 찾지 못함";
-  if (!/중간|기말/.test(name)) return "'중간' 또는 '기말'을 찾지 못함";
-  return "이름 형식을 알아보지 못함";
+  if (!RE_YEAR.test(name)) return "연도 4자리를 찾지 못함";
+  return "연도 뒤에서 과목 이름을 찾지 못함";
 }
+
+/* 시험 하나를 가리키는 열쇠. 학기가 없는 시험도 있으므로 빈 칸은 건너뛴다.
+   2023-기말-감면 / 2023-호흡기계 */
+const examKey = (q) => [q.year, q.term, q.subject].filter(Boolean).join("-");
+/* 화면에 쓰는 시험 이름: 2023 감면 기말 / 2023 호흡기계 */
+const examName = (q) => [q.year, q.subject, q.term].filter(Boolean).join(" ");
+/* 기말 → 중간 → N차 → 학기 없음 순 */
+const termOrd = (t) => (t === "기말" ? 0 : t === "중간" ? 1 : t ? 2 : 3);
 
 /* ── 만든 파일을 기기에 넘기기 ──────────────────────────────────
    아이패드·아이폰 사파리는 blob 에 붙은 <a download> 를 그냥 무시하는 일이 잦고,
@@ -698,7 +714,7 @@ $("f1").onchange = async (ev) => {
       if (!qs.length) { skipped.push(name + " (문제 0개)"); continue; }
       const items = [];
       for (const q of qs) {
-        const id = `${meta.year}-${meta.term}-${meta.subject}-${q.num}`;
+        const id = `${examKey(meta)}-${q.num}`;
         await DB.put("docx", id, { stem: q.stem, presented: q.presented, choices: q.choices, images: q.images });
         items.push({
           id, year: meta.year, term: meta.term, subject: meta.subject,
@@ -723,7 +739,7 @@ $("f1").onchange = async (ev) => {
     if (!blks.length) { skipped.push(name + " (문제 0개)"); continue; }
     await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
     const items = blks.map((b) => ({
-      id: `${meta.year}-${meta.term}-${meta.subject}-${qkey(b)}`,
+      id: `${examKey(meta)}-${qkey(b)}`,
       year: meta.year, term: meta.term, subject: meta.subject,
       qnum: b.qnum, sec: b.sec, page: b.page, ord: b.ord,
       file: name, source: "solution", s: b.s, e: b.e, qp: b.qp,
@@ -738,7 +754,8 @@ $("f1").onchange = async (ev) => {
   setTimeout(() => { $("b1").hidden = true; bar.style.width = "0"; }, 400);
   renderBank();
   if (skipped.length) err("e1", "건너뜀\n· " + skipped.join("\n· ") +
-    "\n이름은 '2023 감면 기말 풀이.pdf' 또는 '2023 감면 기말.docx' 형식이어야 합니다.");
+    "\n이름은 '2023 감면 기말 풀이.pdf' 또는 '2023 감면 기말.docx' 형식이어야 합니다." +
+    "\n중간/기말 구분이 없는 시험은 '2023 호흡기계 풀이.pdf' 처럼 빼면 됩니다.");
 };
 
 $("clr").onclick = async () => {
@@ -758,7 +775,7 @@ function planProject() {
   const haveDocx = new Set(), sol = new Map();
   for (const [name, f] of Object.entries(RAW)) {
     const q = f.items[0]; if (!q) continue;
-    const key = `${q.year}-${q.term}-${q.subject}`;
+    const key = examKey(q);
     if (f.kind === "doc") haveDocx.add(key);
     else sol.set(name, { year: q.year, term: q.term, subject: q.subject, key });
   }
@@ -879,7 +896,7 @@ function grabJSON(s) {
 /* 시험지가 없는 연도는 Claude 가 쪽 범위로 답한다: 2020-기말-감면-p442~444.
    어느 슬라이드가 한 문제인지 코드가 추측하지 않으므로 어긋날 일이 없다.
    쪽번호 앞의 p 는 문제 번호와 헷갈리지 않기 위한 것이다 (…-29 는 29번 문제). */
-const RE_SPAN = /^\s*(\d{4})-(중간|기말)-(.+?)-p(\d{1,4})(?:\s*[~\-–]\s*p?(\d{1,4}))?\s*$/;
+const RE_SPAN = /^\s*(\d{4})-(?:(중간|기말|\d차)-)?(.+?)-p(\d{1,4})(?:\s*[~\-–]\s*p?(\d{1,4}))?\s*$/;
 
 function solutionFileFor(year, term, subject) {
   for (const [name, f] of Object.entries(RAW)) {
@@ -894,7 +911,8 @@ function solutionFileFor(year, term, subject) {
 function spanPick(rawId) {
   const m = RE_SPAN.exec(nfc(rawId || ""));
   if (!m) return null;
-  const [, y, term, subject, a, b] = m;
+  const [, y, term0, subject, a, b] = m;
+  const term = term0 || "";
   const hit = solutionFileFor(+y, term, subject.trim());
   if (!hit) return null;
   const [file, np] = hit;
@@ -902,7 +920,7 @@ function spanPick(rawId) {
   if (to - from > 12) return null;                 // 한 문제가 열 장을 넘지는 않는다
   if (np && (from < 1 || from > np)) return null;  // 원본에 없는 쪽 — 조용히 빠지지 않게
   return {
-    id: `${y}-${term}-${subject.trim()}-p${from}${to > from ? "~" + to : ""}`,
+    id: `${examKey({ year: +y, term, subject: subject.trim() })}-p${from}${to > from ? "~" + to : ""}`,
     year: +y, term, subject: subject.trim(),
     qnum: null, sec: "", page: from, to, ord: from,
     file, source: "solution", s: from - 1, e: to, text: "",
@@ -933,7 +951,8 @@ $("rd").onclick = () => {
         "\n id 는 '2023-기말-감면-6' 이나 '2020-기말-감면-p442~444' 형식이어야 하고," +
         "\n 그 족보가 1단계에 등록돼 있어야 합니다." : ""));
   }
-  VERDICTS.sort((a, b) => b.year - a.year || TERM_ORD[a.term] - TERM_ORD[b.term] || (a.ord ?? a.qnum) - (b.ord ?? b.qnum));
+  VERDICTS.sort((a, b) => b.year - a.year || termOrd(a.term) - termOrd(b.term)
+    || a.subject.localeCompare(b.subject, "ko") || (a.ord ?? a.qnum) - (b.ord ?? b.qnum));
   if (miss.length) err("e3", `문제 은행에 없는 항목 ${miss.length}개는 건너뜁니다 — ${miss.slice(0, 3).join(", ")}${miss.length > 3 ? " …" : ""}`);
   renderVerdicts();
   setStep(3, "done"); setStep(4, "active");
@@ -948,7 +967,7 @@ function renderVerdicts() {
       <input type="checkbox" ${v.verdict === "solvable" ? "checked" : ""}>
       <div>
         <div class="meta">
-          <span class="who">${v.year} ${v.term} ${qlabel(v)}</span>
+          <span class="who">${esc(examName(v))} ${qlabel(v)}</span>
           <span class="kind ${v.source === "docx" ? "doc" : "sol"}">${v.source === "docx" ? "시험지" : "풀이"}</span>
           <span class="tag ${v.verdict}">${LABEL[v.verdict]}</span>
           ${v.pages ? `<span class="tag pg">강의안 ${v.pages}쪽</span>` : ""}
@@ -1253,7 +1272,7 @@ function decorQuestion(q, slots, pageNo, part) {
     }
     g.fillStyle = ACC; roundRect(g, 18, 15, 3, 15, 1.5); g.fill();
     g.font = `700 13.5px ${FONT}`; g.fillStyle = INK; g.textBaseline = "middle";
-    const head = `${q.year} ${q.term}  ${qlabel(q)}`;
+    const head = `${examName(q)}  ${qlabel(q)}`;
     g.fillText(head, 29, 23);
     let x = 29 + g.measureText(head).width + 9;
     const [txt, fg, bg] = VLABEL[q.verdict] || VLABEL.partial;
@@ -1288,7 +1307,7 @@ function decorDocx(q, data, pageNo, imgBoxes) {
     g.textBaseline = "middle";
     g.fillStyle = ACC; roundRect(g, 18, 15, 3, 15, 1.5); g.fill();
     g.font = `700 13.5px ${FONT}`; g.fillStyle = INK;
-    const head = `${q.year} ${q.term}  ${qlabel(q)}`;
+    const head = `${examName(q)}  ${qlabel(q)}`;
     g.fillText(head, 29, 23);
     let hx = 29 + g.measureText(head).width + 9;
     const [txt, fg, bg] = VLABEL[q.verdict] || VLABEL.partial;
@@ -1354,7 +1373,7 @@ function decorCover(title, n, years) {
   };
 }
 
-function decorDivider(year, term) {
+function decorDivider(year, rest) {
   return (g) => {
     g.fillStyle = "#F7F8FA"; g.fillRect(0, 0, PW, PH);
     g.textBaseline = "alphabetic";
@@ -1364,7 +1383,7 @@ function decorDivider(year, term) {
     g.fillStyle = ACC; roundRect(g, 66, PH / 2 + 34, 92, 6, 3); g.fill();
     g.fillStyle = "#C6CDD6"; roundRect(g, 166, PH / 2 + 34, 34, 6, 3); g.fill();
     g.font = `600 19px ${FONT}`; g.fillStyle = MUTE;
-    g.fillText(term, 70 + w + 16, PH / 2 + 12);
+    if (rest) g.fillText(rest, 70 + w + 16, PH / 2 + 12);   // 학기가 없는 시험도 있다
   };
 }
 
@@ -1446,8 +1465,11 @@ async function buildPDF(picks, title) {
   let lastKey = null, pageNo = 1;
 
   for (const q of picks) {
-    const key = q.year + q.term;
-    if (key !== lastKey) { await addDecor(out, decorDivider(q.year, q.term)); lastKey = key; }
+    const key = examKey(q);
+    if (key !== lastKey) {
+      await addDecor(out, decorDivider(q.year, [q.subject, q.term].filter(Boolean).join(" ")));
+      lastKey = key;
+    }
 
     if (q.source === "docx") {
       if (!docxCache.has(q.id)) docxCache.set(q.id, await DB.get("docx", q.id));
@@ -1517,7 +1539,7 @@ function decorStamp(human, id, w) {
 
 /* 조각 표지 — Claude 가 이 파일이 무엇이고 어떻게 답해야 하는지 알 수 있게 */
 function decorIdxCover(meta, from, to, part, total) {
-  const key = `${meta.year}-${meta.term}-${meta.subject}`;
+  const key = examKey(meta);
   return (g) => {
     g.fillStyle = "#FFFFFF"; g.fillRect(0, 0, PW, PH);
     g.fillStyle = "#F2F6FC"; g.beginPath(); g.arc(PW - 90, 90, 190, 0, 7); g.fill();
@@ -1525,7 +1547,7 @@ function decorIdxCover(meta, from, to, part, total) {
     g.font = `800 14px ${FONT}`; g.fillStyle = ACC;
     g.fillText("기출 풀이 슬라이드", 64, 96);
     g.font = `800 30px ${FONT}`; g.fillStyle = INK;
-    g.fillText(`${meta.year} ${meta.subject} ${meta.term}`, 64, 140);
+    g.fillText(examName(meta), 64, 140);
     g.font = `500 13px ${FONT}`; g.fillStyle = "#4E5968";
     const lines = [
       `${part} / ${total} 번째 조각 · 원본 ${from}~${to}쪽`,
@@ -1547,7 +1569,7 @@ function decorIdxCover(meta, from, to, part, total) {
 async function composeChunks(src, meta, pages, perFile) {
   const chunks = [];
   for (let i = 0; i < pages.length; i += perFile) chunks.push(pages.slice(i, i + perFile));
-  const key = `${meta.year}-${meta.term}-${meta.subject}`;
+  const key = examKey(meta);
   const out = [];
   for (let c = 0; c < chunks.length; c++) {
     const chunk = chunks[c];
@@ -1564,7 +1586,7 @@ async function composeChunks(src, meta, pages, perFile) {
       const page = doc.addPage([w, h + IDX_BAND]);
       placePage(page, emb, sp, [0, 0, w, h]);
       const png = await decorPng(
-        decorStamp(`${meta.year} ${meta.term} ${no}쪽`, `${key}-p${no}`, w), w, IDX_BAND, 3);
+        decorStamp(`${examName(meta)} ${no}쪽`, `${key}-p${no}`, w), w, IDX_BAND, 3);
       page.drawImage(await doc.embedPng(png), { x: 0, y: h, width: w, height: IDX_BAND });
     }
     out.push({ bytes: await doc.save(), pages: doc.getPageCount(),
@@ -1589,7 +1611,7 @@ async function buildProjectChunks(fileName, meta, onProgress) {
     if (made.every((m) => m.bytes.length <= IDX_MAX_BYTES) || perFile <= 12) break;
     perFile = Math.max(12, Math.floor(perFile / 2));
   }
-  const base = `${meta.year} ${meta.subject} ${meta.term} 풀이`;
+  const base = `${examName(meta)} 풀이`;
   return made.map((m, i) => ({
     name: `${base} ${i + 1}.pdf`, bytes: m.bytes, pages: m.pages,
     from: m.from, to: m.to,
@@ -1602,7 +1624,9 @@ function projectInstructions(docxFiles, chunkFiles) {
   if (docxFiles.length) lines.push(
 `- 시험지 파일 (${docxFiles.join(", ")})
   문제 전문이 들어 있습니다. id 는 파일 이름에서 만듭니다 — 연도-학기-과목-문제번호
-  예: 2023-기말-감면-6`);
+  예: 2023-기말-감면-6
+  중간/기말 구분이 없는 시험은 학기 칸을 빼고 연도-과목-문제번호 로 씁니다
+  예: 2023-호흡기계-12`);
   if (chunkFiles.length) lines.push(
 `- 풀이 슬라이드 조각 (${chunkFiles.join(", ")})
   시험지가 없는 연도라 풀이 파일을 자르기만 한 것입니다. 문제·해설·출처 슬라이드가
@@ -1610,6 +1634,7 @@ function projectInstructions(docxFiles, chunkFiles) {
   한 문제는 보통 슬라이드 두세 장으로 이어집니다. 그 문제의 슬라이드가 **시작하는 쪽과
   끝나는 쪽**을 ~ 로 이어 적으세요 — 연도-학기-과목-p시작쪽~끝쪽 (쪽번호 앞에 p 를 붙입니다)
   예: 2020-기말-감면-p442~444  (한 장뿐이면 2020-기말-감면-p442)
+  중간/기말 구분이 없는 시험은 학기 칸을 뺍니다 — 예: 2023-호흡기계-p88~90
   id 에는 쪽 위에 찍힌 번호만 쓰고, 슬라이드 안에 보이는 문제 번호로 바꾸지 마세요.
   대신 슬라이드에 보이는 문제 번호를 no 항목에 따로 적어 주세요 (예: "no": "268").
   그림뿐이라 번호가 안 보이면 no 는 생략하면 됩니다.`);
