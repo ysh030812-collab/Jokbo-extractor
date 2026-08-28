@@ -11,6 +11,9 @@ from docx.oxml import parse_xml
 OUT = pathlib.Path(__file__).parent / "fixtures"
 OUT.mkdir(exist_ok=True)
 
+NUMPR = '''<w:pPr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+ <w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>'''
+
 TEXTBOX = '''<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
  xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
@@ -153,6 +156,51 @@ for t in ["(그림 설명: 바이러스 구조도)", "<보기>", "가. 첫째", 
     A(t)
 d.add_paragraph()._p.append(parse_xml(TEXTBOX))
 d.save(OUT / "t.docx")
+
+
+# ── 2025 소화기: 선지에 소수, 뒤바뀐 번호, 번호만 있는 줄 ──────────────
+d = docx.Document()
+A = d.add_paragraph
+def choices(*xs):
+    for t in xs:
+        p = A(t)
+        p._p.append(parse_xml(NUMPR))          # 워드 자동 번호 목록 서식
+
+A("2025 소화기 문제복원")
+# 12번 — 첫 선지가 "38.5도의 발열…". 38번 문제로 잡혀 13~37번이 통째로 날아갔다
+A("12. 87세 여성 환자가 3일전부터 발생한 발열과 복통을 주소로 내원했다. 옳지 않은 것은?")
+choices("38.5도의 발열이 나타나므로 원인균을 찾기 위한 대변 검사를 해야한다.",
+        "고령의 환자이므로 설사로 인한 탈수를 고려해 수액 투여를 해야 한다.",
+        "수양성 설사이므로 경험적 항생제 투여를 시작해야 한다.",
+        "수액 및 전해질 공급이 우선되어야 한다.",
+        "세균 배양을 해도 원인균이 동정되지 않을 수 있다.")
+A("13. 흡수 장애 환자의 진단 방법에 대한 설명으로 틀린 것은?")
+choices("가", "나", "다", "라", "마")
+# 14 : 소수처럼 보이지만 진짜 문제 머리 (바로 다음 번호이므로 인정한다)
+A("14.3세 남아가 복통으로 내원하였다. 가장 알맞은 진단은?")
+choices("가", "나", "다")
+A("26. Achalasia의 병태생리로 알맞은 것은?")
+choices("가", "나", "다", "라", "마")
+A("27. Sliding hernia에서 나타날 수 있는 조직학적 소견은?")
+choices("가", "나", "다", "라")
+# 87 → 89 → 88 : 복원하다 번호 순서가 뒤바뀌었다
+A("87. 면역관문억제제 사용의 좋은 소견이 아닌 것은?")
+choices("MSI-h", "Tumor mutation burden", "MMR proficient")
+A("89. 혀의 dorsal part이다. 다음 설명 중 옳은 것은?")
+choices("(가) - keratinized stratified squamous epithelieum",
+        "(나) - gustatory cell 의 microvilli 에 receptor 존재")
+A("88.유전자 변이와 그에 따른 표적 치료제가 짝지어진 것중 옳지 않은 것은?")
+choices("Her2 변이 - trastuzumab", "EGFR 변이 - osimertinib")
+# 126 : 번호만 찍고 지문은 다음 줄에
+A("126.")
+A("50세 여자가 최근 피로감을 느껴 간검사를 위해 병원에 왔다. 옳은 것은?")
+choices("Lamivudine", "Adefovir Dipivoxil", "Entecavir")
+A("136. 세균 간 농양에 대한 설명으로 옳은 것은?")
+choices("경피적 배액이 기본이다.", "K. pneumoniae 에 의해 가장 많이 발생한다.")
+# 137 : 마침표 없이 번호만 붙었다
+A("137 소화성 궤양의 특징으로 옳은것은?")
+A("H pylori로 인한 소화성궤양은 십이지장이 위보다 많다")
+d.save(OUT / "real2025.docx")
 
 for f in sorted(os.listdir(OUT)):
     print(f"{os.path.getsize(OUT / f) / 1024:7.0f} KB  fixtures/{f}")

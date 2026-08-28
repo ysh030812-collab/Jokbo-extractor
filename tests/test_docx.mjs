@@ -79,5 +79,25 @@ ck('2023 87: 선지 16개', r3.find(q => q.num === 87).choices.length, 16);
 ck('2023 66: "66번." 표기 + 번호 없는 선지', r3.find(q => q.num === 66).choices.length, 6);
 ck('2023 110: 조합형 선지', r3.find(q => q.num === 110).choices, ['a, b, e', 'b, c, e', 'a, d, e', 'b, c, d', 'c, d, e']);
 
+/* ── 4. 2025 소화기: 소수·뒤바뀐 번호·번호만 있는 줄 ─────────────── */
+const r25 = M.docxQuestions(load('real2025.docx'));
+const b25 = new Map(r25.map((q) => [q.num, q]));
+console.log('real2025 추출:', r25.map((q) => q.num));
+
+ck('선지의 소수를 문제 번호로 읽지 않는다', r25.map((q) => q.num), [12, 13, 14, 26, 27, 87, 88, 89, 126, 136, 137]);
+ck('14: 소수처럼 보여도 바로 다음 번호면 문제로 본다',
+  b25.get(14).stem, '3세 남아가 복통으로 내원하였다. 가장 알맞은 진단은?');
+ck('12: "38.5도의 발열…" 은 첫 선지', b25.get(12).choices[0],
+  '38.5도의 발열이 나타나므로 원인균을 찾기 위한 대변 검사를 해야한다.');
+ck('12: 선지 5개', b25.get(12).choices.length, 5);
+ck('26·27 이 살아 있다', [b25.get(26).stem, b25.get(27).stem],
+  ['Achalasia의 병태생리로 알맞은 것은?', 'Sliding hernia에서 나타날 수 있는 조직학적 소견은?']);
+ck('88: 87 → 89 → 88 순서가 뒤바뀌어도 잡는다',
+  b25.get(88).stem, '유전자 변이와 그에 따른 표적 치료제가 짝지어진 것중 옳지 않은 것은?');
+ck('88: 89 의 선지를 뺏어오지 않는다', b25.get(89).choices.length, 2);
+ck('126: 번호만 있는 줄 다음이 지문',
+  b25.get(126).stem, '50세 여자가 최근 피로감을 느껴 간검사를 위해 병원에 왔다. 옳은 것은?');
+ck('137: 마침표 없는 번호도 잡는다', b25.get(137).stem, '소화성 궤양의 특징으로 옳은것은?');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
