@@ -99,5 +99,20 @@ ck('126: 번호만 있는 줄 다음이 지문',
   b25.get(126).stem, '50세 여자가 최근 피로감을 느껴 간검사를 위해 병원에 왔다. 옳은 것은?');
 ck('137: 마침표 없는 번호도 잡는다', b25.get(137).stem, '소화성 궤양의 특징으로 옳은것은?');
 
+/* ── 5. 2022·2023 소화기: 번호가 빠지거나 되돌아간 자리 ─────────── */
+const s22 = M.docxQuestions(load('real2022sohwa.docx'));
+console.log('real2022sohwa 추출:', s22.map((q) => q.num));
+ck('첫머리에 번호가 빠진 문제 두 개를 1·2번으로 되살린다', s22.map((q) => q.num), [1, 2, 3, 5, 43]);
+ck('1번 지문', s22[0].stem.startsWith('(김채균) 해당 약물은 somatostatin'), true);
+ck('2번 지문', s22[1].stem.startsWith('당뇨를 치료 중인 50세 여자 환자가'), true);
+ck('43번 선지 5개가 4번 문제로 새지 않는다', s22.find((q) => q.num === 43).choices.length, 5);
+
+const s23 = M.docxQuestions(load('real2023sohwa.docx'));
+console.log('real2023sohwa 추출:', s23.map((q) => q.num));
+ck('111번 뒤에 끼워 넣은 16번을 잡는다', s23.map((q) => q.num), [1, 16, 111, 117]);
+ck('16번 지문', s23.find((q) => q.num === 16).stem, '[진영주] 간농양에 대한 설명 중 맞는 것은?');
+ck('16번 선지 5개', s23.find((q) => q.num === 16).choices.length, 5);
+ck('111번 선지를 16번이 뺏어가지 않는다', s23.find((q) => q.num === 111).choices.length, 3);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

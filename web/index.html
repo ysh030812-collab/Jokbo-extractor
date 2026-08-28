@@ -1179,8 +1179,12 @@ function docxQuestions(buf) {
      (실제로 87 → 89 → 88 순으로 적힌 것을 봤다). 아직 안 쓴 번호이고 지금까지의
      최대 번호에서 멀지 않으면 받아 준다. 선지(1~5)는 앞서 같은 번호의 문제가
      이미 있어 걸러지고, 그 전이라면 isChoice 가 먼저 가져간다. */
-  const isNew = (n) => n >= 1 && n <= 400
-    && (!cur || n > maxNum || (!qs.has(n) && n >= maxNum - 20));
+  /* 문제처럼 읽히는 줄인가 — 되돌아간 번호를 받아 줄지 가를 때 쓴다 */
+  const looksQ = (t) => /[?？]\s*$/.test(t || "")
+    || /(것은|것을|고르시오|고르세요|쓰시오|하시오|설명하시오|기술하시오|무엇)/.test(t || "");
+  const isNew = (n, rest) => n >= 1 && n <= 400
+    && (!cur || n > maxNum
+        || (!qs.has(n) && (n >= maxNum - 20 || looksQ(rest))));
   /* 이어지는 선지인가. 문제 번호는 항상 커지므로 지금까지 나온 최대 번호보다
      작으면 새 문제일 수 없다 — 선지가 6개를 넘는 문제(실제 족보에 16개짜리가
      있다)도 이 규칙이면 끝까지 선지로 남는다. 앞쪽 문제라 그 판정이 안 되는
@@ -1211,7 +1215,7 @@ function docxQuestions(buf) {
           const at = stemAt();
           if (at >= 0) { adoptPre(at); cur._body.push([ln, isList]); expect = 2; continue; }
         }
-        if (isNew(n)) { startQ(n, m[2]); continue; }
+        if (isNew(n, m[2])) { startQ(n, m[2]); continue; }
         if (cur) cur._body.push([ln, isList]);
         continue;
       }
@@ -1231,6 +1235,19 @@ function docxQuestions(buf) {
     }
     if (imgs.length) (cur ? cur.images : preImgs).push(...imgs);
   }
+  /* 주의사항 구분선(______) 뒤에 번호 없이 적혀 있고 본문은 3번부터 시작하는
+     족보가 있다. 구분선 뒤 줄 수가 빠진 번호 수와 정확히 맞을 때만 1번부터
+     차례로 매긴다 — 어긋나면 손대지 않는다. */
+  const firstNum = qs.size ? Math.min(...qs.keys()) : 0;
+  if (firstNum >= 2 && pre.length) {
+    const at = pre.findIndex(([t]) => /^[_\-—─=＿]{8,}$/.test(t.replace(/\s/g, "")));
+    const rest = at >= 0 ? pre.slice(at + 1) : [];
+    if (rest.length === firstNum - 1) {
+      rest.forEach(([t], i) => qs.set(i + 1, { num: i + 1, stem: t, _body: [], images: [] }));
+      if (preImgs.length) qs.get(1).images.push(...preImgs);
+    }
+  }
+
   /* 선지까지 Word 목록(numPr)이라 "1." 이 글자로 안 남은 경우의 1번 복구 */
   if (!qs.has(1) && qs.size && Math.min(...qs.keys()) === 2) {
     const at = stemAt();
