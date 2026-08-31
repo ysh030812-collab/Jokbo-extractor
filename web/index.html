@@ -580,7 +580,9 @@ function handOff(list, onNote) {
   if (!list.length) return null;
   const files = list.map((f) => new File([f.bytes], f.name, { type: "application/pdf" }));
   if (IS_APPLE && navigator.canShare && navigator.canShare({ files })) {
-    navigator.share({ files, title: files.length > 1 ? "족보 파일" : files[0].name })
+    /* files 만 넘긴다. title 이나 text 를 같이 넘기면 아이패드가 그것을 따로 된
+       항목으로 보고 '파일에 저장' 때 .txt 를 하나 더 만든다. */
+    navigator.share({ files })
       .then(() => onNote && onNote(""))          /* 공유가 끝났으면 안내를 지운다 */
       .catch((e) => {
         if (e && e.name === "AbortError") return;      // 사용자가 취소한 것

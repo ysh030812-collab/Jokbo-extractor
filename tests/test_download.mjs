@@ -29,8 +29,12 @@ async function run({ apple }) {
     window.__shared = null; window.__links = [];
     navigator.canShare = (d) => !!(d && d.files && d.files.length);
     navigator.share = async (d) => {
-      if (!navigator.userActivation || navigator.userActivation.isActive === undefined) { /* 정보 없음 */ }
-      window.__shared = { names: d.files.map((f) => f.name), sizes: d.files.map((f) => f.size), active: !!(navigator.userActivation && navigator.userActivation.isActive) };
+      window.__shared = {
+        names: d.files.map((f) => f.name), sizes: d.files.map((f) => f.size),
+        keys: Object.keys(d).sort(),          // files 말고 다른 것을 같이 넘겼는가
+        types: [...new Set(d.files.map((f) => f.type))],
+        active: !!(navigator.userActivation && navigator.userActivation.isActive),
+      };
     };
     const click = HTMLAnchorElement.prototype.click;
     HTMLAnchorElement.prototype.click = function () { if (this.download) window.__links.push(this.download); else click.call(this); };
@@ -72,6 +76,9 @@ async function run({ apple }) {
     ck('아이패드 — 파일 전부 한 번에', shared && shared.names.length, made);
     ck('아이패드 — 사용자 제스처 유효', shared && shared.active, true);
     ck('아이패드 — 링크 방식은 안 씀', links.length, 0);
+    /* title 이나 text 를 같이 넘기면 '파일에 저장' 때 .txt 가 하나 더 생긴다 */
+    ck('아이패드 — files 만 넘긴다 (txt 가 딸려오지 않게)', shared && shared.keys, ['files']);
+    ck('아이패드 — 전부 PDF 로 넘어간다', shared && shared.types, ['application/pdf']);
     console.log('   넘긴 파일 :', shared.names.map((n, i) => `${n} ${(shared.sizes[i] / 1048576).toFixed(1)}MB`).join(' / '));
     console.log('   합계 :', (shared.sizes.reduce((a, b) => a + b, 0) / 1048576).toFixed(1), 'MB');
   } else {
