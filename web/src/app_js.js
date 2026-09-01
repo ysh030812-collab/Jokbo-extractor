@@ -307,6 +307,7 @@ function renderBank() {
   $("r1").hidden = false;
   setStep(1, "done"); setStep(3, "active");
   renderProject();
+  renderManual();
 
   const old = names.filter((n) => (RAW[n].v || 1) < PARSER_VER);
   $("old").hidden = !old.length;
@@ -325,6 +326,7 @@ async function delFile(name) {
   err("e1", "");
   renderBank();
   if (!BANK.length) { VERDICTS = []; $("qs").innerHTML = ""; setStep(3, "locked"); setStep(4, "locked"); }
+  renderManual();
 }
 
 $("f1").onchange = async (ev) => {
@@ -396,7 +398,7 @@ $("f1").onchange = async (ev) => {
 $("clr").onclick = async () => {
   await DB.clear("files"); await DB.clear("meta"); await DB.clear("docx");
   RAW = {}; BANK = []; VERDICTS = []; MADE = [];
-  ["s2", "s3", "pf", "qs"].forEach((i) => ($(i).innerHTML = ""));
+  ["s2", "s3", "pf", "mx", "qs"].forEach((i) => ($(i).innerHTML = ""));
   $("pn").hidden = true; $("cpins").hidden = true;
   ["e1", "e2", "e3", "e4"].forEach((i) => err(i, ""));
   $("ta").value = "";
@@ -520,6 +522,88 @@ $("f2").onchange = (ev) => {
   $("s3").innerHTML = `<span class="pill on">표지 제목 · ${esc(LECNAME.replace(/\.pdf$/i, ""))}</span>`;
 };
 
+/* ── 3-b. Claude 없이 번호로 직접 고르기 ──────────────────────── */
+/* 등록된 시험 목록 (연도 최신순) */
+function examsOf() {
+  const m = new Map();
+  for (const f of Object.values(RAW)) for (const q of f.items) {
+    const k = examKey(q);
+    if (!m.has(k)) m.set(k, { year: q.year, term: q.term, subject: q.subject, n: 0 });
+    m.get(k).n++;
+  }
+  return [...m.values()].sort((a, b) => b.year - a.year
+    || termOrd(a.term) - termOrd(b.term) || a.subject.localeCompare(b.subject, "ko"));
+}
+
+let MEXAMS = [];
+
+function renderManual() {
+  MEXAMS = examsOf();
+  const mx = $("mx");
+  if (!MEXAMS.length) { mx.innerHTML = ""; $("man").hidden = true; return; }
+  $("man").hidden = false;
+  mx.innerHTML = MEXAMS.map((e, i) => `<li class="fi">
+      <span class="nm" title="${esc(examName(e))}">${esc(examName(e))}</span>
+      <input class="mnum" data-i="${i}" inputmode="text" autocomplete="off"
+             aria-label="${esc(examName(e))} 문제 번호" placeholder="6, 7, 12-15">
+    </li>`).join("");
+}
+
+/* "6, 7, 12-15, 주37, p442~444" → 문제 은행 id 목록 */
+function parseNums(text, exam) {
+  const key = examKey(exam), out = [], bad = [];
+  for (const tok of String(text || "").split(/[,\s]+/).filter(Boolean)) {
+    /* p442~444 : 번호를 모르는 그림 문제를 쪽으로 가리킨다 (한 문제) */
+    let m = /^p(\d{1,4})(?:[~\-–]p?(\d{1,4}))?$/i.exec(tok);
+    if (m) { out.push(`${key}-p${m[1]}${m[2] ? "~" + m[2] : ""}`); continue; }
+    /* 12-15 : 문제 번호 범위 (네 문제) */
+    m = /^(\d{1,3})[~\-–](\d{1,3})$/.exec(tok);
+    if (m && +m[2] >= +m[1] && +m[2] - +m[1] <= 200) {
+      for (let n = +m[1]; n <= +m[2]; n++) out.push(`${key}-${n}`);
+      continue;
+    }
+    /* 37 · 주37 */
+    m = /^(주)?(\d{1,3})$/.exec(tok);
+    if (m) { out.push(`${key}-${m[1] || ""}${m[2]}`); continue; }
+    bad.push(tok);
+  }
+  return [out, bad];
+}
+
+$("mgo").onclick = () => {
+  err("e5", "");
+  const ids = [], bad = [];
+  $("mx").querySelectorAll(".mnum").forEach((el) => {
+    const [got, no] = parseNums(el.value, MEXAMS[+el.dataset.i]);
+    ids.push(...got); bad.push(...no);
+  });
+  if (!ids.length) return err("e5", "번호를 입력해 주세요.");
+
+  const byId = new Map(BANK.map((q) => [q.id, q]));
+  const seen = new Set();
+  VERDICTS = [];
+  const miss = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const q = byId.get(id) || spanPick(id);
+    if (!q) { miss.push(id.replace(/^.*?-(?=[^-]*$)/, "")); continue; }
+    VERDICTS.push({ ...q, no: "", verdict: "picked", pages: "", why: "" });
+  }
+  if (!VERDICTS.length) {
+    return err("e5", "적으신 번호가 등록된 족보에 없습니다.\n1단계 파일 목록의 문제 수를 확인해 주세요.");
+  }
+  VERDICTS.sort((a, b) => b.year - a.year || termOrd(a.term) - termOrd(b.term)
+    || a.subject.localeCompare(b.subject, "ko") || (a.ord ?? a.qnum) - (b.ord ?? b.qnum));
+  const notes = [];
+  if (bad.length) notes.push(`알아보지 못한 표기 ${bad.length}개 — ${bad.slice(0, 5).join(", ")}`);
+  if (miss.length) notes.push(`족보에 없는 번호 ${miss.length}개 — ${miss.slice(0, 8).join(", ")}${miss.length > 8 ? " …" : ""}`);
+  err("e5", notes.join("\n"));
+  renderVerdicts();
+  setStep(3, "done"); setStep(4, "active");
+  $("c4").scrollIntoView({ behavior: "smooth", block: "start" });
+};
+
 function grabJSON(s) {
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence) { try { return JSON.parse(fence[1]); } catch (e) { /* fall through */ } }
@@ -595,11 +679,11 @@ $("rd").onclick = () => {
 };
 
 /* ── 4. 확인 & PDF ────────────────────────────────────────────── */
-const LABEL = { solvable: "풀 수 있음", partial: "일부", unrelated: "무관" };
+const LABEL = { solvable: "풀 수 있음", partial: "일부", unrelated: "무관", picked: "직접 고름" };
 function renderVerdicts() {
   $("qs").innerHTML = VERDICTS.map((v, i) => `
-    <li class="q ${v.verdict === "solvable" ? "sel" : ""}" data-i="${i}">
-      <input type="checkbox" ${v.verdict === "solvable" ? "checked" : ""}>
+    <li class="q ${v.verdict === "unrelated" || v.verdict === "partial" ? "" : "sel"}" data-i="${i}">
+      <input type="checkbox" ${v.verdict === "unrelated" || v.verdict === "partial" ? "" : "checked"}>
       <div>
         <div class="meta">
           <span class="who">${esc(examName(v))} ${qlabel(v)}</span>

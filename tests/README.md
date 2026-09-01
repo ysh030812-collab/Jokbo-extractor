@@ -21,6 +21,7 @@ node tests/test_js.mjs       # 파일명(학기 유무·NFC/NFD) · 블록 범�
 node tests/test_scan.mjs     # 풀이 PDF 블록 스캔 — 2020 실물 구조 (주관식·출처 슬라이드)
 node tests/test_docx.mjs     # 시험지 DOCX 파싱
 node tests/test_download.mjs # 내려받기 — 아이패드는 공유 시트, 그 외는 링크
+node tests/test_manual.mjs   # Claude 없이 번호만 적어 고르는 길
 node tests/e2e.mjs           # 브라우저 전 과정 (CHROME=<크로미움 경로> 로 지정 가능)
 ```
 
@@ -28,6 +29,20 @@ node tests/e2e.mjs           # 브라우저 전 과정 (CHROME=<크로미움 경
 지시문 → 판정 붙여넣기 → 결과 PDF 까지 실제 브라우저에서 돌린다. 조각이
 Claude 의 요청 한도(**32MB · 100쪽**) 안에 들어오는지 검사하고, 넘으면 실패한다.
 결과물은 `tests/e2e_project_out.pdf` 로 남는다.
+
+## Claude 없이 번호로 직접 고르기
+
+3단계 아래 접이식 칸에서 시험마다 문제 번호를 적으면 Claude 를 거치지 않고 바로
+목록이 된다. 이미 어느 문제를 뽑을지 알고 있을 때 쓴다.
+
+| 적는 법 | 뜻 |
+|---|---|
+| `6, 7, 12-15` | 6번, 7번, 12\~15번 (네 문제) |
+| `주37` | 주관식 37번 |
+| `p442~444` | 번호를 모르는 그림 문제 — 원본 442\~444쪽 (한 문제) |
+
+알아보지 못한 표기와 족보에 없는 번호는 따로 나눠 알려 준다.
+`test_manual.mjs` 가 이 길을 등록부터 결과 PDF 까지 확인한다.
 
 ## Project 에 넣는 파일
 

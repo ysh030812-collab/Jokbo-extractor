@@ -271,7 +271,12 @@ function wrapText(g, text, maxW) {
   return out;
 }
 
-const VLABEL = { solvable: ["풀 수 있음", "#00A661", "#E4F7EF"], partial: ["일부", "#C77700", "#FDF3E3"], unrelated: ["참고", "#6B7684", "#F1F3F5"] };
+const VLABEL = {
+  solvable: ["풀 수 있음", "#00A661", "#E4F7EF"],
+  partial: ["일부", "#C77700", "#FDF3E3"],
+  unrelated: ["참고", "#6B7684", "#F1F3F5"],
+  picked: ["직접 고름", "#1B64DA", "#E8F2FE"],
+};
 
 /* 문제 페이지의 배경·라벨·카드 테두리 (슬라이드는 이 위에 벡터로 얹는다) */
 function decorQuestion(q, slots, pageNo, part) {

@@ -185,9 +185,26 @@
   .tag.solvable{background:var(--ok-soft);color:var(--ok)}
   .tag.partial {background:var(--warn-soft);color:var(--warn)}
   .tag.unrelated{background:var(--off-soft);color:var(--off)}
+  .tag.picked{background:var(--accent-soft);color:var(--accent-ink)}
   .tag.pg{background:var(--accent-soft);color:var(--accent-ink)}
 
   /* 건너뛴 파일 목록은 줄바꿈으로 나열된다 — 접히면 읽을 수 없다 */
+  /* 번호를 직접 적어 고르는 접이식 칸 */
+  details.man{margin-top:16px;border-top:1px solid var(--line-2);padding-top:14px}
+  details.man summary{
+    cursor:pointer;font-weight:600;font-size:14.5px;color:var(--accent-ink);
+    list-style:none;letter-spacing:-.01em;
+  }
+  details.man summary::-webkit-details-marker{display:none}
+  details.man summary::before{content:"＋ ";font-weight:700}
+  details.man[open] summary::before{content:"－ "}
+  .mnum{
+    flex:none;width:46%;min-width:132px;padding:9px 11px;font:inherit;font-size:14px;
+    border:1.5px solid var(--line);border-radius:var(--r-sm);
+    background:var(--surface);color:var(--ink);
+  }
+  .mnum:focus{outline:none;border-color:var(--accent)}
+
   .err{color:var(--danger);font-size:14px;margin-top:12px;font-weight:500;white-space:pre-line}
   .err.info{color:var(--ink-2)}                 /* 오류가 아닌 안내 */
   .err:empty{margin-top:0}
@@ -275,6 +292,18 @@
     <input type="file" id="f2" accept="application/pdf">
     <div class="stat" id="s3"></div>
     <div class="err" id="e3"></div>
+
+    <details class="man" id="man">
+      <summary>Claude 없이 번호로 직접 고르기</summary>
+      <p class="hint" style="margin:10px 2px">
+        시험마다 문제 번호를 적으세요. 쉼표나 공백으로 나눕니다.<br>
+        <code>6, 7, 12-15</code> 처럼 범위도 되고, 주관식은 <code>주37</code>,
+        번호를 모르는 그림 문제는 <code>p442~444</code> 처럼 쪽으로 적습니다.
+      </p>
+      <ul class="files" id="mx"></ul>
+      <button class="btn ghost" id="mgo" style="margin-top:10px">번호로 목록 만들기</button>
+      <div class="err" id="e5"></div>
+    </details>
   </div>
 </section>
 
