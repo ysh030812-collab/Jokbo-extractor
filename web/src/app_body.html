@@ -75,6 +75,21 @@
   .card.locked{opacity:.5}
 
   .head{display:flex;align-items:center;gap:11px;margin-bottom:4px}
+  /* 1·2단계는 처음 한 번만 쓴다 — 머리줄을 눌러 접어 둘 수 있다 */
+  .card.can-fold .head{cursor:pointer;-webkit-tap-highlight-color:transparent}
+  .head .sum{
+    margin-left:auto;color:var(--ink-3);font-size:13px;font-weight:600;
+    font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .head .fold{
+    flex:none;width:30px;height:30px;padding:0;border-radius:8px;background:transparent;
+    color:var(--ink-3);font-size:12px;line-height:1;display:grid;place-items:center;
+    transition:transform .18s;
+  }
+  .head .fold:hover{background:var(--off-soft)}
+  .card.shut .fold{transform:rotate(-90deg)}
+  .card.shut .sub,.card.shut .body{display:none}
+  .card.shut{padding-top:18px;padding-bottom:18px;margin-bottom:10px}
   .num{
     flex:none;width:26px;height:26px;border-radius:50%;
     background:var(--off-soft); color:var(--ink-3);
@@ -137,6 +152,15 @@
   .note.warn b{color:inherit}
   .note ol{margin:8px 0 0;padding-left:19px}
   .note li{margin:5px 0}
+
+  /* 과목 고르기 — 여러 과목을 한 기기에 등록해 두고 그때그때 바꾼다 */
+  .chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:14px}
+  .chip{
+    font-size:13.5px;font-weight:600;padding:8px 13px;border-radius:999px;
+    background:var(--surface-2);color:var(--ink-2);border:1.5px solid transparent;
+  }
+  .chip.on{background:var(--accent-soft);color:var(--accent-ink);border-color:var(--accent)}
+  .chip b{font-weight:600;opacity:.62;margin-left:5px;font-variant-numeric:tabular-nums}
 
   .stat{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
   .pill{
@@ -222,17 +246,21 @@
 
 <!-- 1 ─────────────────────────────────────────────── -->
 <section class="card active" id="c1">
-  <div class="head"><span class="num">1</span><h2>족보 등록</h2></div>
+  <div class="head"><span class="num">1</span><h2>족보 등록</h2>
+    <span class="sum" id="k1"></span>
+    <button class="fold" id="fd1" aria-label="1단계 접기" aria-expanded="true">▼</button></div>
   <p class="sub">처음 한 번만. 기기에 저장되고 밖으로 나가지 않습니다.</p>
   <div class="body">
     <label class="drop" for="f1">
       <span>📄</span><span><b>족보 파일 고르기</b> · 여러 개 한꺼번에
-        <span class="fmt"><code>2023 감면 기말 풀이.pdf</code><code>2023 감면 기말.docx</code></span>
+        <span class="fmt"><code>2023 감면 기말 풀이.pdf</code><code>2023 감면 기말.docx</code><code>2023 감면 기말.pdf</code></span>
         <span class="hint">연도 · 과목 · 중간/기말 순서로, 풀이 슬라이드는 끝에 ‘풀이’<br>
+          시험지는 docx·pdf 둘 다 됩니다 — pdf 는 문제 부분을 그대로 오려 씁니다<br>
           중간/기말 구분이 없는 시험은 빼면 됩니다 — <code>2023 호흡기계 풀이.pdf</code></span></span>
     </label>
     <input type="file" id="f1" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple>
     <div class="bar" id="b1" hidden><i></i></div>
+    <div class="chips" id="sb" hidden></div>
     <div class="stat" id="s1"></div>
     <ul class="files" id="fl"></ul>
     <div class="note warn" id="old" hidden>
@@ -247,7 +275,9 @@
 
 <!-- 2 ─────────────────────────────────────────────── -->
 <section class="card locked" id="c2">
-  <div class="head"><span class="num">2</span><h2>Claude Project 준비</h2></div>
+  <div class="head"><span class="num">2</span><h2>Claude Project 준비</h2>
+    <span class="sum" id="k2"></span>
+    <button class="fold" id="fd2" aria-label="2단계 접기" aria-expanded="true">▼</button></div>
   <p class="sub">처음 한 번만. 여기서 만든 파일을 Project 지식에 올려 둡니다.</p>
   <div class="body">
     <button class="btn" id="mkidx">Project에 올릴 파일 만들기</button>
@@ -324,7 +354,8 @@
 </section>
 
 <footer>
-  풀이 슬라이드는 3장을 한 페이지에 모아 붙이고, 시험지 DOCX는 문제를 다시 조판합니다.<br>
+  풀이 슬라이드는 3장을 한 페이지에 모아 붙이고, 시험지 PDF는 문제 부분을 오려 붙입니다.<br>
+  시험지 DOCX는 글자만 있으므로 문제를 다시 조판합니다.<br>
   연도 최신순으로 정렬되며 표지와 구분 페이지가 들어갑니다.<br>
   판정은 Claude Project가 맡습니다 — 그림으로만 된 문제도 눈으로 보고 고릅니다.<br>
   파일은 브라우저 안에서만 처리되며 어디에도 전송되지 않습니다.

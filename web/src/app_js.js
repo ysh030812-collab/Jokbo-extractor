@@ -60,6 +60,83 @@ async function pageTexts(buf, onPage) {
   return out;
 }
 
+/* 시험지 PDF 는 글자의 좌표까지 있어야 한다 — 어디서 오려낼지 정해야 하므로.
+   PDF 좌표(좌하단 원점) 그대로 돌려준다. transform[4]=x, [5]=글줄 기준선 y.
+
+   글자만으로는 오려낼 자리를 정확히 잡을 수 없다. 표·그림·수식은 글자가 아니라서
+   "이 문제가 어디서 끝나는지"를 글줄로 재면 그림이 잘리거나, 반대로 빈 종이가
+   잔뜩 딸려온다. 그래서 쪽을 아주 작게(1px=2pt) 한 번 그려 보고 실제로 잉크가
+   묻은 줄·칸을 같이 재 둔다. 재는 데만 쓰고 결과물에는 원본 벡터가 들어간다. */
+const INK_SCALE = 0.5, INK_MAX_PAGES = 200;
+
+async function inkOf(pg) {
+  const vp = pg.getViewport({ scale: INK_SCALE });
+  const w = Math.max(1, Math.ceil(vp.width)), h = Math.max(1, Math.ceil(vp.height));
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.fillStyle = "#fff"; g.fillRect(0, 0, w, h);
+  await pg.render({ canvasContext: g, viewport: vp }).promise;
+  const d = g.getImageData(0, 0, w, h).data;
+  const row = new Uint8Array(h), lo = new Uint16Array(h), hi = new Uint16Array(h);
+  for (let r = 0; r < h; r++) {
+    let n = 0, a = w, b = -1;
+    for (let x = 0; x < w; x++) {
+      const i = (r * w + x) * 4;
+      if (d[i + 3] > 8 && (d[i] < 245 || d[i + 1] < 245 || d[i + 2] < 245)) {
+        n++; if (x < a) a = x; b = x;
+      }
+    }
+    /* 점 하나짜리는 얼룩으로 보고 무시한다 */
+    row[r] = n >= 2 ? 1 : 0; lo[r] = a; hi[r] = b < 0 ? 0 : b;
+  }
+  return { row, lo, hi, s: INK_SCALE };
+}
+
+async function pageLines(buf, onPage) {
+  const doc = await pdfjsLib.getDocument({ data: buf, isEvalSupported: false }).promise;
+  const out = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const pg = await doc.getPage(i);
+    const vp = pg.getViewport({ scale: 1 });
+    const items = (await pg.getTextContent()).items
+      .filter((t) => t.str && t.str.trim())
+      .sort((a, b) => b.transform[5] - a.transform[5]);
+    /* 같은 줄이라도 기준선이 조금씩 흔들린다. 2pt 안이면 한 줄로 묶는다. */
+    const lines = [];
+    let row = null;
+    for (const t of items) {
+      const y = t.transform[5];
+      if (!row || Math.abs(row.y - y) > 2) { row = { y, its: [] }; lines.push(row); }
+      row.its.push(t);
+    }
+    let ink = null;
+    /* 쪽마다 한 번씩 그려 보는 값이다. 시험지는 스무 쪽 안쪽이라 순식간이지만,
+       풀이 파일이 이름을 잘못 달고 들어오면 수백 쪽이 된다. 그때는 재지 않는다
+       — 없으면 글줄만으로 이어가고, 자르는 자리만 조금 헐거워진다. */
+    if (doc.numPages <= INK_MAX_PAGES) {
+      try { ink = await inkOf(pg); } catch (e) { /* 못 그려도 글줄만으로 이어간다 */ }
+    }
+    out.push({
+      w: vp.width, h: vp.height, ink,
+      lines: lines.map((r) => {
+        r.its.sort((a, b) => a.transform[4] - b.transform[4]);
+        return {
+          y: r.y,
+          x: r.its[0].transform[4],
+          x2: Math.max(...r.its.map((t) => t.transform[4] + (t.width || 0))),
+          h: Math.max(...r.its.map((t) => t.height || 0)) || 10,
+          t: r.its.map((t) => t.str).join("").trim(),
+        };
+      }).filter((l) => l.t),
+    });
+    pg.cleanup();
+    if (onPage) onPage(i, doc.numPages);
+  }
+  await doc.destroy();
+  return out;
+}
+
 /* ── 문제 시작 슬라이드 찾기 (파이썬판과 동일 규칙) ──────────────── */
 const RE_MARK = /\(\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*\)/;
 const RE_ANS = /^\s*(정답|답)\s*[:：）)]?/;
@@ -236,12 +313,31 @@ function handOff(list, onNote) {
 /* RAW 는 파일별 원본 추출 결과, BANK 는 그것을 합쳐 중복을 정리한 것.
    파일 하나만 지워도 나머지가 정확히 복원되도록 원본을 따로 들고 있는다. */
 let RAW = {}, BANK = [], VERDICTS = [], LECNAME = "", DONE = [];
+/* 화면에 보일 과목. "" 이면 전체. 여러 과목을 한 기기에 등록해 두고 갈아탄다. */
+let SUBJ = "";
 
 const setStep = (n, state) => {
   const c = $("c" + n);
   c.classList.remove("locked", "active", "done");
   if (state) c.classList.add(state);
 };
+/* ── 1·2단계 접기 ─────────────────────────────────────────────
+   등록과 Project 준비는 처음 한 번만 하고 그 뒤로는 안 쓴다. 머리줄만 남기고
+   접어 두되, 손으로 한 번이라도 여닫았으면 그 뜻을 우선한다. */
+const FOLD = {};
+function setFold(n, shut, byUser) {
+  if (!byUser && FOLD[n] != null) return;
+  if (byUser) FOLD[n] = !!shut;
+  $("c" + n).classList.toggle("shut", !!shut);
+  const b = $("fd" + n);
+  if (b) b.setAttribute("aria-expanded", shut ? "false" : "true");
+}
+["1", "2"].forEach((n) => {
+  const c = $("c" + n);
+  c.classList.add("can-fold");
+  c.querySelector(".head").onclick = () => setFold(n, !c.classList.contains("shut"), true);
+});
+
 const err = (id, msg) => { $(id).textContent = msg || ""; $(id).classList.remove("info"); };
 /* 오류가 아닌 안내 (내려받기 방식 설명 등) */
 const info = (id, msg) => { $(id).textContent = msg || ""; $(id).classList.toggle("info", !!msg); };
@@ -250,12 +346,14 @@ const info = (id, msg) => { $(id).textContent = msg || ""; $(id).classList.toggl
 /* 파서를 고쳐도 이미 등록된 파일은 예전 결과 그대로 남는다. 파일마다 어느 판으로
    읽었는지 적어 두고, 낡았으면 다시 올리라고 알려 준다. 올리기 전에는 지우지 않는다. */
 const PARSER_VER = 4;
-/* 같은 문제가 풀이와 시험지에 다 있으면 풀이 슬라이드를 쓴다 (원본이 그대로 들어가므로) */
+/* 같은 문제가 여러 파일에 있으면 원본이 가장 온전한 것을 쓴다.
+   풀이 슬라이드(해설까지 있음) > 시험지 PDF(표·그림 그대로) > 시험지 DOCX(다시 조판) */
+const SRANK = { solution: 3, exam: 2, docx: 1 };
 function rebuild() {
   const best = new Map();
   for (const f of Object.values(RAW)) for (const q of f.items) {
     const prev = best.get(q.id);
-    if (!prev || (prev.source === "docx" && q.source === "solution")) best.set(q.id, q);
+    if (!prev || (SRANK[q.source] || 0) > (SRANK[prev.source] || 0)) best.set(q.id, q);
   }
   BANK = [...best.values()];
 }
@@ -266,28 +364,76 @@ async function loadBank() {
   if (!RAW) {                                   // 예전 판(meta.bank) 에서 올라온 경우
     RAW = {};
     for (const q of (await DB.get("meta", "bank")) || []) {
-      const f = RAW[q.file] || (RAW[q.file] = { kind: q.source === "docx" ? "doc" : "sol", n: 0, items: [] });
+      const f = RAW[q.file] || (RAW[q.file] = { kind: q.source === "solution" ? "sol" : "doc", n: 0, items: [] });
       f.items.push(q); f.n++;
     }
     if (Object.keys(RAW).length) await saveRaw();
   }
   rebuild();
+  SUBJ = (await DB.get("meta", "subj")) || "";
   renderBank();
+  /* 다시 들어왔을 때는 등록·준비가 이미 끝나 있다. 머리줄만 남기고 접어 둔다.
+     아직 할 일이 남은 단계는 펴 둔다 — 접힌 안쪽에 눌러야 할 버튼이 숨으면 안 된다. */
+  if (Object.keys(RAW).length) {
+    setFold(1, !Object.keys(RAW).some((n) => (RAW[n].v || 1) < PARSER_VER));
+    setFold(2, !planProject().need.length);
+  }
 }
 
 const esc = (s) => String(s).replace(/[<>&"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
 
+/* 등록된 과목과 그 문제 수. 겹친 문제를 정리한 뒤로 세야 '전체' 와 합이 맞는다. */
+function subjects() {
+  const m = new Map();
+  for (const q of BANK) m.set(q.subject, (m.get(q.subject) || 0) + 1);
+  return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0], "ko"));
+}
+/* 지금 고른 과목의 것인가. 과목을 안 골랐으면 전부 통과. */
+const subjOf = (name) => { const q = RAW[name] && RAW[name].items[0]; return q ? q.subject : ""; };
+const inSubj = (name) => !SUBJ || subjOf(name) === SUBJ;
+const bankNow = () => (SUBJ ? BANK.filter((q) => q.subject === SUBJ) : BANK);
+
+function renderSubjects() {
+  const list = subjects(), sb = $("sb");
+  if (SUBJ && !list.some(([n]) => n === SUBJ)) SUBJ = "";   // 과목이 통째로 지워졌다
+  if (list.length < 2) { sb.hidden = true; sb.innerHTML = ""; return; }
+  sb.hidden = false;
+  sb.innerHTML = [["", "전체", BANK.length]]
+    .concat(list.map(([n, c]) => [n, n, c]))
+    .map(([v, label, n]) =>
+      `<button class="chip ${v === SUBJ ? "on" : ""}" data-s="${esc(v)}">${esc(label)}<b>${n}</b></button>`)
+    .join("");
+  sb.querySelectorAll(".chip").forEach((b) => {
+    b.onclick = async (ev) => {
+      ev.stopPropagation();
+      SUBJ = b.dataset.s;
+      await DB.put("meta", "subj", SUBJ);
+      MADE = [];                                  // 과목이 바뀌면 만들어 둔 조각도 다르다
+      VERDICTS = []; $("qs").innerHTML = "";
+      ["e2", "e3", "e5"].forEach((i) => err(i, ""));
+      renderBank();
+      setStep(3, "active"); setStep(4, "locked");
+    };
+  });
+}
+
 function renderBank() {
-  const s1 = $("s1"), fl = $("fl"), names = Object.keys(RAW);
+  const s1 = $("s1"), fl = $("fl");
+  renderSubjects();
+  const names = Object.keys(RAW).filter(inSubj);
   if (!names.length) {
-    s1.innerHTML = ""; fl.innerHTML = ""; $("r1").hidden = true;
-    setStep(1, "active"); setStep(2, "locked"); return;
+    s1.innerHTML = ""; fl.innerHTML = ""; $("r1").hidden = true; $("k1").textContent = "";
+    setStep(1, "active"); setStep(2, "locked");
+    renderProject(); renderManual();
+    return;
   }
-  const sol = BANK.filter((q) => q.source === "solution").length;
-  const doc = BANK.length - sol;
-  s1.innerHTML = `<span class="pill on">총 ${BANK.length}문제</span>` +
+  const shown = bankNow();
+  const sol = shown.filter((q) => q.source === "solution").length;
+  const doc = shown.length - sol;
+  s1.innerHTML = `<span class="pill on">총 ${shown.length}문제</span>` +
     (sol ? `<span class="pill">풀이 ${sol}문제</span>` : "") +
     (doc ? `<span class="pill">시험지 ${doc}문제</span>` : "");
+  $("k1").textContent = `${SUBJ ? SUBJ + " · " : ""}파일 ${names.length}개 · ${shown.length}문제`;
 
   /* 파일마다 몇 문제가 실제로 쓰이는지 — 겹친 문제는 풀이 쪽으로 넘어간다 */
   const used = new Map();
@@ -297,7 +443,7 @@ function renderBank() {
     const f = RAW[n], u = used.get(n) || 0;
     const cnt = u === f.n ? `${f.n}문제` : `${f.n}문제 중 ${u}개`;
     return `<li class="fi">
-      <span class="kind ${f.kind}">${f.kind === "sol" ? "풀이" : "시험지"}</span>
+      <span class="kind ${f.kind === "sol" ? "sol" : "doc"}">${f.kind === "sol" ? "풀이" : "시험지"}</span>
       <span class="nm" title="${esc(n)}">${esc(n)}</span>
       <span class="ct">${cnt}</span>
       <button class="x" data-f="${esc(n)}" aria-label="${esc(n)} 지우기" title="지우기">×</button>
@@ -309,7 +455,7 @@ function renderBank() {
   renderProject();
   renderManual();
 
-  const old = names.filter((n) => (RAW[n].v || 1) < PARSER_VER);
+  const old = names.filter((n) => (RAW[n].v || 1) < PARSER_VER);   // names 는 이미 과목으로 걸렀다
   $("old").hidden = !old.length;
   if (old.length) $("oldn").textContent = old.length + "개";
 }
@@ -319,8 +465,8 @@ async function delFile(name) {
   if (!f) return;
   delete RAW[name];
   MADE = [];
-  if (f.kind === "sol") await DB.del("files", name);
-  else for (const q of f.items) await DB.del("docx", q.id);
+  if (f.kind === "doc") for (const q of f.items) await DB.del("docx", q.id);
+  else await DB.del("files", name);            // 풀이·시험지 PDF 는 원본을 그대로 들고 있다
   rebuild();
   await saveRaw();
   err("e1", "");
@@ -333,8 +479,9 @@ $("f1").onchange = async (ev) => {
   const files = [...ev.target.files]; ev.target.value = "";
   if (!files.length) return;
   err("e1", ""); $("b1").hidden = false;
+  setFold(1, false, true);                       // 접혀 있어도 결과가 보이게 편다
   const bar = $("b1").firstElementChild;
-  const skipped = [];
+  const skipped = [], added = [];
 
   for (let fi = 0; fi < files.length; fi++) {
     const f = files[fi];
@@ -361,7 +508,32 @@ $("f1").onchange = async (ev) => {
         });
       }
       RAW[name] = { kind: "doc", v: PARSER_VER, n: items.length, items };
+      added.push(name);
       bar.style.width = (((fi + 1) / files.length) * 100).toFixed(1) + "%";
+      continue;
+    }
+
+    if (!name.includes("풀이")) {                   // 시험지 PDF
+      let pages;
+      try {
+        pages = await pageLines(buf.slice(0), (p, n) => {
+          bar.style.width = (((fi + p / n) / files.length) * 100).toFixed(1) + "%";
+        });
+      } catch (e) { skipped.push(name + " (읽기 실패)"); continue; }
+      const qs = pdfExamQuestions(pages);
+      if (!qs.length) {
+        skipped.push(name + " (문제 0개 — 스캔한 시험지는 글자가 없어 읽지 못합니다)");
+        continue;
+      }
+      await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
+      const items = qs.map((q) => ({
+        id: `${examKey(meta)}-${q.sec}${q.num}`,
+        year: meta.year, term: meta.term, subject: meta.subject,
+        qnum: q.num, sec: q.sec, page: q.page, ord: q.sec === "주" ? 400 + q.num : q.num,
+        file: name, source: "exam", crops: q.crops, text: q.text,
+      }));
+      RAW[name] = { kind: "exam", v: PARSER_VER, n: items.length, np: pages.length, items };
+      added.push(name);
       continue;
     }
 
@@ -383,10 +555,18 @@ $("f1").onchange = async (ev) => {
       text: texts.slice(b.s, b.e).join("\n").trim().slice(0, 1400),
     }));
     RAW[name] = { kind: "sol", v: PARSER_VER, n: items.length, np: texts.length, items };
+    added.push(name);
   }
   bar.style.width = "100%";
   rebuild();
   MADE = [];                                     // 족보가 바뀌었으니 색인도 다시 만들어야 한다
+  /* 다른 과목을 보고 있는데 파일을 올리면 그 파일이 목록에 안 보여 실패한 것처럼
+     된다. 그럴 때만 방금 올린 쪽으로 옮겨 준다 (전체를 보고 있으면 그대로 둔다). */
+  const got = [...new Set(added.map((n) => subjOf(n)))].filter(Boolean);
+  if (SUBJ && got.length && !got.includes(SUBJ)) {
+    SUBJ = got.length === 1 ? got[0] : "";
+    await DB.put("meta", "subj", SUBJ);
+  }
   await saveRaw();
   setTimeout(() => { $("b1").hidden = true; bar.style.width = "0"; }, 400);
   renderBank();
@@ -397,7 +577,7 @@ $("f1").onchange = async (ev) => {
 
 $("clr").onclick = async () => {
   await DB.clear("files"); await DB.clear("meta"); await DB.clear("docx");
-  RAW = {}; BANK = []; VERDICTS = []; MADE = [];
+  RAW = {}; BANK = []; VERDICTS = []; MADE = []; SUBJ = "";
   ["s2", "s3", "pf", "mx", "qs"].forEach((i) => ($(i).innerHTML = ""));
   $("pn").hidden = true; $("cpins").hidden = true;
   ["e1", "e2", "e3", "e4"].forEach((i) => err(i, ""));
@@ -411,12 +591,12 @@ $("clr").onclick = async () => {
 function planProject() {
   const haveDocx = new Set(), sol = new Map();
   for (const [name, f] of Object.entries(RAW)) {
-    const q = f.items[0]; if (!q) continue;
+    const q = f.items[0]; if (!q || !inSubj(name)) continue;
     const key = examKey(q);
-    if (f.kind === "doc") haveDocx.add(key);
+    if (f.kind !== "sol") haveDocx.add(key);
     else sol.set(name, { year: q.year, term: q.term, subject: q.subject, key });
   }
-  const asis = Object.keys(RAW).filter((n) => RAW[n].kind === "doc").sort().reverse();
+  const asis = Object.keys(RAW).filter((n) => RAW[n].kind !== "sol" && inSubj(n)).sort().reverse();
   const need = [...sol.entries()].filter(([, m]) => !haveDocx.has(m.key))
     .sort((a, b) => b[1].year - a[1].year);
   return { asis, need };
@@ -427,7 +607,12 @@ let MADE = [];                                   // 이번에 만든 색인 파�
 function renderProject() {
   const { asis, need } = planProject();
   const pf = $("pf"), s2 = $("s2");
-  if (!asis.length && !need.length) { pf.innerHTML = ""; s2.innerHTML = ""; return; }
+  if (!asis.length && !need.length) {
+    pf.innerHTML = ""; s2.innerHTML = ""; $("k2").textContent = "";
+    $("pn").hidden = true; $("cpins").hidden = true; $("dlall").hidden = true;
+    $("mkidx").hidden = true;
+    return;
+  }
   s2.innerHTML = `<span class="pill on">올릴 파일 ${asis.length + MADE.length}개</span>` +
     (need.length && !MADE.length ? `<span class="pill">쪼갤 연도 ${need.length}개</span>` : "");
 
@@ -450,6 +635,9 @@ function renderProject() {
   if (MADE.length) $("dlall").textContent =
     MADE.length > 1 ? `조각 ${MADE.length}개 한 번에 받기` : "조각 파일 받기";
   const ready = asis.length > 0 || MADE.length > 0;
+  $("k2").textContent = need.length && !MADE.length
+    ? `쪼갤 연도 ${need.length}개 남음`
+    : ready ? `올릴 파일 ${asis.length + MADE.length}개` : "";
   $("pn").hidden = !ready;
   $("cpins").hidden = !ready;
   /* 색인을 만들 연도가 남아 있으면 아직 할 일이 있다는 뜻 */
@@ -526,7 +714,7 @@ $("f2").onchange = (ev) => {
 /* 등록된 시험 목록 (연도 최신순) */
 function examsOf() {
   const m = new Map();
-  for (const f of Object.values(RAW)) for (const q of f.items) {
+  for (const q of bankNow()) {
     const k = examKey(q);
     if (!m.has(k)) m.set(k, { year: q.year, term: q.term, subject: q.subject, n: 0 });
     m.get(k).n++;
@@ -687,7 +875,7 @@ function renderVerdicts() {
       <div>
         <div class="meta">
           <span class="who">${esc(examName(v))} ${qlabel(v)}</span>
-          <span class="kind ${v.source === "docx" ? "doc" : "sol"}">${v.source === "docx" ? "시험지" : "풀이"}</span>
+          <span class="kind ${v.source === "solution" ? "sol" : "doc"}">${v.source === "solution" ? "풀이" : "시험지"}</span>
           <span class="tag ${v.verdict}">${LABEL[v.verdict]}</span>
           ${v.pages ? `<span class="tag pg">강의안 ${v.pages}쪽</span>` : ""}
         </div>
@@ -706,7 +894,7 @@ function renderVerdicts() {
 }
 function count() {
   const on = [...$("qs").querySelectorAll(".q")].filter((li) => li.querySelector("input").checked);
-  const doc = on.filter((li) => VERDICTS[+li.dataset.i].source === "docx").length;
+  const doc = on.filter((li) => VERDICTS[+li.dataset.i].source !== "solution").length;
   const sol = on.length - doc;
   $("s4").textContent = on.length
     ? `${on.length}문제가 들어갑니다` + (sol && doc ? ` — 풀이 ${sol} · 시험지 ${doc}.` : ".")

@@ -57,6 +57,51 @@ doc.subset_fonts()
 doc.save(f"{OUT}/73. Antiviral agents (김채균).pdf", garbage=4, deflate=True)
 doc.close()
 
+# ── 시험지 PDF (A4 세로, 실제 시험지와 같은 배치) ────────────────
+#    글자만 뽑아 조판하면 사라지는 것들(표·그림)을 일부러 넣는다.
+EX = [
+    "[1~4번 : 이훈재 교수님 출제]",
+    "1. 다음 중 역전사효소에 작용하지 않는 약물은?  (4)",
+    "1) Abacavir", "2) 15세 이상에서 쓰는 Didanosine", "3) Lamivudine",
+    "4) Ibalizumab", "5) Tenofovir",
+    None,
+    "2. 아래 표에서 발병률이 가장 높은 무리는?  (1)",
+    "TABLE",
+    "1) 가", "2) 나", "3) 다", "4) 라", "5) 마",
+    None,
+    "3.100명을 두 군으로 나누어 관찰하였다. 옳은 것은?  (2)",
+    "1) 가", "2) 나", "3) 다", "4) 라", "5) 마",
+    None,
+    "4. 아래 그림이 나타내는 것은?  (5)",
+    "FIGURE",
+]
+doc = fitz.open()
+pg = doc.new_page(width=595, height=842)
+y = 100
+for t in EX:
+    if t is None:
+        y += 16
+        continue
+    if t == "TABLE":
+        for r in range(3):
+            pg.draw_rect(fitz.Rect(85, y, 465, y + 22), color=(0, 0, 0), width=0.8)
+            pg.insert_text((95, y + 15), f"row {r}", fontfile=FF, fontname="ko", fontsize=10)
+            y += 22
+        y += 10
+        continue
+    if t == "FIGURE":
+        pg.draw_rect(fitz.Rect(85, y, 465, y + 170), color=(0, 0, 0), width=1.5)
+        pg.insert_text((230, y + 90), "그림", fontfile=FF, fontname="ko", fontsize=22)
+        y += 180
+        continue
+    if y > 700:                                   # 다음 쪽으로 넘긴다
+        pg = doc.new_page(width=595, height=842); y = 100
+    pg.insert_text((85, y), t, fontfile=FF, fontname="ko", fontsize=10)
+    y += 16
+doc.subset_fonts()
+doc.save(f"{OUT}/2021 감면 기말.pdf", garbage=4, deflate=True)
+doc.close()
+
 shutil.copy(str(HERE / "fixtures" / "real_2023.docx"), f"{OUT}/2023 감면 기말.docx")
 # 중간/기말 구분이 없는 시험 (블록 강의처럼 한 번만 보는 과목)
 shutil.copy(str(HERE / "fixtures" / "real2022.docx"), f"{OUT}/2024 호흡기계.docx")

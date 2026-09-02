@@ -28,6 +28,9 @@ const COUNTER = /^(개월|가지|시간|단계|퍼센트|개|명|번|째|쪽|장
 const NOISE = /^\s*하나를\s*(선택|고르)/;
 /* 질문 끝맺음. 번호가 통째로 빠진 1번 문제를 되살릴 때만 쓴다. */
 const isStem = (l) => /\?\s*$/.test(l);
+/* 문제처럼 읽히는 줄인가 — 번호만으로 못 가릴 때 쓴다 (DOCX·시험지 PDF 공통) */
+const looksQ = (t) => /[?？]\s*$/.test(t || "")
+  || /(것은|것을|고르시오|고르세요|쓰시오|하시오|설명하시오|기술하시오|무엇)/.test(t || "");
 
 /* 문단 → 물리적 줄. mc:Fallback 과 w:txbxContent 하위는 건너뛴다.
    둘 다 내려가면 텍스트 상자 내용이 2~3번 중복된다 (파이썬판과 같은 수정). */
@@ -154,9 +157,6 @@ function docxQuestions(buf) {
      (실제로 87 → 89 → 88 순으로 적힌 것을 봤다). 아직 안 쓴 번호이고 지금까지의
      최대 번호에서 멀지 않으면 받아 준다. 선지(1~5)는 앞서 같은 번호의 문제가
      이미 있어 걸러지고, 그 전이라면 isChoice 가 먼저 가져간다. */
-  /* 문제처럼 읽히는 줄인가 — 되돌아간 번호를 받아 줄지 가를 때 쓴다 */
-  const looksQ = (t) => /[?？]\s*$/.test(t || "")
-    || /(것은|것을|고르시오|고르세요|쓰시오|하시오|설명하시오|기술하시오|무엇)/.test(t || "");
   const isNew = (n, rest) => n >= 1 && n <= 400
     && (!cur || n > maxNum
         || (!qs.has(n) && (n >= maxNum - 20 || looksQ(rest))));
@@ -233,6 +233,132 @@ function docxQuestions(buf) {
     q.presented = pres; q.choices = ch; delete q._body;
   }
   return [...qs.values()].sort((a, b) => a.num - b.num);
+}
+
+/* ── 시험지 PDF ────────────────────────────────────────────────────
+   시험지가 PDF 로만 있는 해가 있다. 글자만 뽑아 다시 조판하면 표·그림·수식이
+   통째로 사라지므로, 텍스트는 **어디서 자를지 찾는 데만** 쓰고 결과물에는
+   원본 쪽의 그 부분을 벡터 그대로 오려 붙인다. 그래서 한 줄 잘못 읽어도
+   내용이 깨지지 않고 자르는 선만 조금 어긋난다. */
+
+/* 시험지에서는 소수점 배제(?!\d) 를 쓰지 않는다. "2)15세이상음주량",
+   "18.100명의방사선사진…" 처럼 번호 뒤에 바로 숫자가 오는 줄이 흔한데,
+   배제하면 그 선지·문제가 통째로 사라진다. 대신 줄이 왼쪽 여백에서 시작하는지,
+   위에 빈 줄이 있는지, 번호가 바로 다음 번호인지로 가른다. */
+const PNUM = /^\s*(\d{1,3})\s*[.)．]\s*(.*)$/;
+/* 객관식이 끝나고 주관식이 1번부터 다시 시작하는 자리 */
+const PSUBJ = /^\s*[[［(（]?\s*주관식/;
+
+/* 쪽의 [top, bot] 구간에서 실제로 뭔가 그려진 범위. 잉크를 못 쟀으면 구간 그대로. */
+function inkBand(pgo, top, bot) {
+  const ik = pgo.ink;
+  if (!ik) return { top, bot, left: Infinity, right: -Infinity };
+  const row = (y) => Math.floor((pgo.h - y) * ik.s);
+  const r0 = Math.max(0, row(top)), r1 = Math.min(ik.row.length - 1, row(bot));
+  let a = -1, b = -1, lo = Infinity, hi = -Infinity;
+  for (let r = r0; r <= r1; r++) {
+    if (!ik.row[r]) continue;
+    if (a < 0) a = r;
+    b = r;
+    lo = Math.min(lo, ik.lo[r]); hi = Math.max(hi, ik.hi[r]);
+  }
+  if (a < 0) return null;
+  return { top: pgo.h - a / ik.s, bot: pgo.h - (b + 1) / ik.s,
+           left: lo / ik.s, right: (hi + 1) / ik.s };
+}
+
+/* 구간 안에서 아무것도 안 그려진 띠의 한가운데. 세로로 긴 문제를 단으로 나눌 때
+   글줄 한복판을 자르지 않도록 여기서만 자른다. */
+function blankRows(pgo, top, bot) {
+  const ik = pgo.ink;
+  if (!ik) return [];
+  const row = (y) => Math.floor((pgo.h - y) * ik.s);
+  const r0 = Math.max(0, row(top)), r1 = Math.min(ik.row.length - 1, row(bot));
+  const out = [];
+  let a = -1;
+  for (let r = r0; r <= r1 + 1; r++) {
+    const on = r <= r1 && !ik.row[r];
+    if (on && a < 0) a = r;
+    if (!on && a >= 0) {
+      if (r - a >= 4) out.push(+(pgo.h - ((a + r) / 2) / ik.s).toFixed(1));
+      a = -1;
+    }
+  }
+  return out.slice(0, 60);
+}
+
+/* 시험지 PDF → [{sec, num, page, crops:[{p,x,y,w,h}], text}]
+   pages: [{w, h, lines:[{y, x, x2, h, t}]}]  (PDF 좌표 — 좌하단 원점) */
+function pdfExamQuestions(pages) {
+  const all = pages.flatMap((p) => p.lines);
+  if (all.length < 5) return [];
+
+  /* 본문 왼쪽 여백. 표 안 숫자나 들여쓴 선지를 문제 머리로 오해하지 않기 위한 기준 */
+  const xs = all.map((l) => l.x).sort((a, b) => a - b);
+  const left = xs[Math.floor(xs.length * 0.15)];
+  const xL = Math.max(0, xs[0] - 8);
+  const xR = Math.min(Math.max(...pages.map((p) => p.w)),
+                      Math.max(...all.map((l) => l.x2)) + 8);
+
+  /* 줄 간격의 중앙값 — 이보다 확실히 넓으면 문제와 문제 사이의 빈 줄이다 */
+  const gaps = [];
+  for (const p of pages) for (let i = 1; i < p.lines.length; i++) {
+    const g = p.lines[i - 1].y - p.lines[i].y;
+    if (g > 1 && g < 60) gaps.push(g);
+  }
+  gaps.sort((a, b) => a - b);
+  const pitch = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 16;
+  const BIG = pitch * 1.35;
+
+  const heads = [];
+  let cur = null, expect = 1, maxNum = 0, sec = "";
+  pages.forEach((pg, pi) => pg.lines.forEach((l, li) => {
+    if (PSUBJ.test(l.t) && sec !== "주") {          // 주관식은 번호가 1부터 다시 시작한다
+      sec = "주"; maxNum = 0; expect = 1; cur = null;
+      /* 이 줄에서 앞 문제가 끝난다 — 안 그러면 마지막 객관식에 이 머리말이 딸려간다 */
+      heads.push({ mark: true, pi, top: l.y + l.h });
+      return;
+    }
+    const m = PNUM.exec(l.t);
+    if (!m || l.x > left + 4) return;               // 들여쓴 줄은 선지·표 안의 숫자다
+    const n = +m[1];
+    /* 쪽 첫 줄은 위 여백을 알 수 없다. 문제 지문은 대개 길거나 물음표로 끝나므로
+       그것으로 가른다 (짧으면 앞 쪽에서 이어진 선지로 본다). */
+    const big = li ? pg.lines[li - 1].y - l.y >= BIG : looksQ(m[2]) || m[2].length > 30;
+    const canChoice = cur && n === expect && (expect <= 5 || n <= maxNum);
+    const canHead = n === maxNum + 1;
+    if (canChoice && !(big && canHead)) { expect++; return; }
+    if (canHead || (n > maxNum && big && looksQ(m[2]))) {
+      cur = { sec, num: n, pi, li, top: l.y + l.h };
+      heads.push(cur); expect = 1; maxNum = n;
+    }
+  }));
+  if (!heads.length) return [];
+
+  /* 머리에서 다음 머리 바로 위까지가 그 문제의 자리. 쪽을 넘어가면 조각이 둘이 된다.
+     그 안에서 실제로 잉크가 묻은 데까지 다시 조여 준다 — 표·그림은 글줄에 안 잡히고,
+     문제가 짧으면 아래가 통째로 빈 종이이기 때문이다. */
+  const pad = pitch * 0.4;
+  return heads.map((h, i) => {
+    const nx = heads[i + 1];
+    const endP = nx ? nx.pi : pages.length - 1;
+    const crops = [], txt = [];
+    for (let p = h.pi; p <= endP; p++) {
+      const pgo = pages[p];
+      const top = p === h.pi ? h.top + pad : pgo.h;
+      const bot = p === endP && nx ? nx.top + pad : 0;
+      const bd = inkBand(pgo, top, bot);
+      if (!bd) continue;                            // 그 쪽에 이 문제의 몫이 없다
+      const y1 = Math.min(top, bd.top + pad), y0 = Math.max(bot, bd.bot - pad);
+      if (y1 - y0 < pitch) continue;
+      const x0 = Math.max(0, Math.min(xL, bd.left - 4));
+      const x1 = Math.min(pgo.w, Math.max(xR, bd.right + 4));
+      crops.push({ p, x: x0, y: y0, w: x1 - x0, h: y1 - y0, g: blankRows(pgo, y1, y0) });
+      for (const l of pgo.lines) if (l.y + l.h <= y1 + 1 && l.y >= y0 - 1) txt.push(l.t);
+    }
+    return { mark: !!h.mark, sec: h.sec, num: h.num, page: h.pi + 1, lastPage: endP + 1,
+             crops, text: txt.join("\n").slice(0, 1400) };
+  }).filter((q) => !q.mark && q.crops.length);
 }
 
 /* ── 캔버스 조판 ─────────────────────────────────────────────────── */
@@ -404,6 +530,77 @@ function decorDivider(year, rest) {
   };
 }
 
+/* ── 오려낸 조각 배치 ─────────────────────────────────────────────
+   A4 가로 한 장에 문제 하나. 세로로 긴 문제는 위아래로 잘라 단으로 세워야
+   더 크게 들어간다 — 어느 쪽이 실제로 크게 나오는지 계산해서 고른다. */
+function colSlots(n) {
+  const m = 18, top = 34, gap = 10;
+  const w = PW - m * 2, h = PH - m - top - m;
+  const cw = (w - gap * (n - 1)) / n;
+  return [...Array(n)].map((_, i) => [m + (cw + gap) * i, m, cw, h]);
+}
+
+/* 오려낸 조각들을 위에서 아래로 이어 붙인 다음, 몇 단으로 세워야 가장 크게
+   들어가는지 계산해서 자른다. 짧은 문제는 한 단에 크게, 쪽을 넘어간 문제는
+   위아래로 이어 붙여 읽는 차례 그대로 나온다. */
+const CROP_GAP = 12;                             // 조각 사이 여백 (원본 단위)
+
+/* 자를 자리를 빈 띠로 당겨 글줄이 반토막 나지 않게 한다 */
+function snapCut(c, y) {
+  let best = y, d = 40;
+  for (const g of c.g || []) {
+    const t = Math.abs(g - y);
+    if (t < d) { d = t; best = g; }
+  }
+  return best;
+}
+
+/* 단마다 조각을 위에서부터 쌓고, 실제로 그려질 자리를 돌려준다. 짧은 문제까지
+   칸 한가운데 띄우면 종이가 텅 비어 보이므로 위에 붙인다. */
+function placeCols(lay) {
+  const out = [];
+  lay.cols.forEach((col, i) => {
+    const [sx, sy, sw, sh] = lay.slots[Math.min(i, lay.slots.length - 1)];
+    const s = Math.min(sw / lay.W, sh / lay.colH);
+    let cy = sy + sh;
+    for (const pc of col) {
+      cy -= (pc.gap || 0) * s;
+      const dw = pc.w * s, dh = pc.h * s;
+      out.push({ pc, rect: [sx + (sw - dw) / 2, cy - dh, dw, dh] });
+      cy -= dh;
+    }
+  });
+  return out;
+}
+
+function layoutCrops(crops) {
+  const W = Math.max(...crops.map((c) => c.w));
+  const H = crops.reduce((a, c) => a + c.h, 0) + CROP_GAP * (crops.length - 1);
+  let k = 1, best = 0;
+  for (let n = 1; n <= 3; n++) {
+    const [, , sw, sh] = colSlots(n)[0];
+    const s = Math.min(sw / W, sh / (H / n));
+    if (s > best) { best = s; k = n; }
+  }
+  const cut = H / k, cols = [[]];
+  let at = 0, lead = 0;                          // at: 이어 붙인 좌표에서 지금까지 쓴 길이
+  for (const c of crops) {
+    let top = c.y + c.h, rest = c.h;
+    while (rest > 0.5) {
+      const room = cut * cols.length - at;
+      let take = cols.length < k ? Math.min(rest, room) : rest;
+      if (take < rest) take = Math.max(8, top - snapCut(c, top - take));
+      cols[cols.length - 1].push({ p: c.p, x: c.x, y: top - take, w: c.w, h: take, gap: lead });
+      lead = 0;
+      top -= take; rest -= take; at += take;
+      if (rest > 0.5 && cols.length < k) { cols.push([]); at = cut * (cols.length - 1); }
+    }
+    at += CROP_GAP; lead = CROP_GAP;
+    if (at >= cut * cols.length - 0.5 && cols.length < k) { cols.push([]); at = cut * (cols.length - 1); lead = 0; }
+  }
+  return { cols, slots: colSlots(k), W, colH: cut };
+}
+
 /* 슬라이드 n장을 한 페이지에 놓을 자리 (PDF 좌표: 좌하단 원점) */
 function slotsFor(n) {
   const m = 18, top = 34, gap = 10;
@@ -455,10 +652,39 @@ async function buildPDF(picks, title) {
      문제마다 부르면 원본의 폰트·이미지가 매번 복사돼 결과가 3배로 커진다. */
   const need = new Map();
   for (const q of picks) {
-    if (q.source === "docx") continue;
+    if (q.source !== "solution") continue;
     if (!need.has(q.file)) need.set(q.file, new Set());
     const set = need.get(q.file);
     for (let i = q.s; i < q.e; i++) set.add(i);
+  }
+  /* 시험지 PDF 는 쪽이 아니라 오려낼 자리를 넣는다. 같은 쪽을 여러 번 오려도
+     원본은 한 번만 읽으므로 폰트·그림이 중복 복사되지 않는다. */
+  const cropNeed = new Map();                    // 파일 → 오려낼 자리 목록
+  for (const q of picks) {
+    if (q.source !== "exam" || !(q.crops || []).length) continue;
+    if (!cropNeed.has(q.file)) cropNeed.set(q.file, []);
+    cropNeed.get(q.file).push([q.id, placeCols(layoutCrops(q.crops))]);
+  }
+  const cropMap = new Map();                     // 문제 id → [{emb, src, rect}]
+  for (const [file, list] of cropNeed) {
+    const blob = await DB.get("files", file);
+    if (!blob) throw new Error(`원본 파일이 없습니다: ${file}`);
+    const src = await PDFLib.PDFDocument.load(await blob.arrayBuffer());
+    const np = src.getPageCount();
+    const pages = [], boxes = [], owner = [];
+    for (const [id, put] of list) for (const { pc, rect } of put) {
+      if (pc.p >= np) continue;
+      const sp = src.getPage(pc.p);
+      pages.push(sp);
+      boxes.push({ left: pc.x, bottom: pc.y, right: pc.x + pc.w, top: pc.y + pc.h });
+      owner.push([id, sp, rect]);
+    }
+    if (!pages.length) continue;
+    const embs = await out.embedPages(pages, boxes, pages.map(() => undefined));
+    owner.forEach(([id, sp, rect], k) => {
+      if (!cropMap.has(id)) cropMap.set(id, []);
+      cropMap.get(id).push({ emb: embs[k], src: sp, rect });
+    });
   }
   const embMap = new Map();
   for (const [file, set] of need) {
@@ -503,6 +729,16 @@ async function buildPDF(picks, title) {
       }
       const page = await addDecor(out, decorDocx(q, data, pageNo, imgs));
       for (const b of imgs) if (b.y != null) page.drawImage(b.img, { x: 82, y: PH - b.y - b.h, width: b.w, height: b.h });
+      pageNo++;
+      continue;
+    }
+
+    if (q.source === "exam") {
+      const cuts = cropMap.get(q.id);
+      if (!cuts || !cuts.length) continue;
+      const cards = cuts.map(({ rect: [x, y, w, h] }) => [x - 7, y - 7, w + 14, h + 14]);
+      const page = await addDecor(out, decorQuestion(q, cards, pageNo, "시험지 원본"));
+      for (const c of cuts) placePage(page, c.emb, c.src, c.rect);
       pageNo++;
       continue;
     }
@@ -643,7 +879,8 @@ function projectInstructions(docxFiles, chunkFiles) {
   문제 전문이 들어 있습니다. id 는 파일 이름에서 만듭니다 — 연도-학기-과목-문제번호
   예: 2023-기말-감면-6
   중간/기말 구분이 없는 시험은 학기 칸을 빼고 연도-과목-문제번호 로 씁니다
-  예: 2023-호흡기계-12`);
+  예: 2023-호흡기계-12
+  주관식은 번호 앞에 주 를 붙입니다 — 예: 2023-기말-소화기-주1`);
   if (chunkFiles.length) lines.push(
 `- 풀이 슬라이드 조각 (${chunkFiles.join(", ")})
   시험지가 없는 연도라 풀이 파일을 자르기만 한 것입니다. 문제·해설·출처 슬라이드가
