@@ -83,6 +83,33 @@ const info = await pg.evaluate(async () => {
 });
 console.log('■ 결과 PDF :', info.pages, '쪽 ·', (info.size / 1048576).toFixed(2), 'MB');
 ck('PDF 가 만들어진다', info.pages > 7, true);
+
+/* ── 번호를 묶어 낸 문제 (43-45) — 가운데 번호로 불러도 찾아야 한다 ── */
+await pg.evaluate(({ b64 }) => {
+  const s = atob(b64), u = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+  const dt = new DataTransfer();
+  dt.items.add(new File([u], '2024 묶음 기말.docx'));
+  const el = document.getElementById('f1');
+  el.files = dt.files; el.dispatchEvent(new Event('change', { bubbles: true }));
+}, { b64: fs.readFileSync(path.join(HERE, 'fixtures', 'range.docx')).toString('base64') });
+await pg.waitForFunction(() => [...document.querySelectorAll('#fl .fi .nm')]
+  .some((l) => l.textContent.includes('묶음')), null, { timeout: 60000 });
+
+const pickNums = async (v) => {
+  await pg.$$eval('#mx .mnum', (els, o) => els.forEach((e) => {
+    e.value = e.previousElementSibling.textContent.includes('묶음') ? o : '';
+  }), v);
+  await pg.click('#mgo');
+  await pg.waitForTimeout(120);
+  return pg.$$eval('#qs .q .who', (ls) => ls.map((l) => l.textContent.replace(/^.*기말 /, '')));
+};
+ck('가운데 번호로 불러도 묶음 문제가 나온다', await pickNums('44'), ['43~45번']);
+ck('묶음의 번호를 다 적어도 한 번만 들어간다', await pickNums('43, 44, 45'), ['43~45번']);
+ck('범위로 적어도 같다', await pickNums('43-45'), ['43~45번']);
+ck('쉼표로 묶인 문제도 마찬가지', await pickNums('38'), ['37~38번']);
+ck('보통 문제와 섞어도 된다', await pickNums('36, 45'), ['36번', '43~45번']);
+
 ck('콘솔 오류 없음', errs, []);
 
 await b.close();

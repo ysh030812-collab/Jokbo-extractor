@@ -141,10 +141,12 @@ async function pageLines(buf, onPage) {
 const RE_MARK = /\(\s*(\d{1,2})\s*\/\s*(\d{1,2})\s*\)/;
 const RE_ANS = /^\s*(정답|답)\s*[:：）)]?/;
 /* Safari 호환을 위해 lookbehind 대신 자릿수를 코드에서 검사한다.
-   그래야 표지의 "2023"(4자리)이 202번 문제로 잘려 읽히지 않는다. */
+   그래야 표지의 "2023"(4자리)이 202번 문제로 잘려 읽히지 않는다.
+   번호를 묶어 낸 문제가 있다 — "43-45. 알코올성 간질환의 …", "37,38. 위에서 …".
+   묶음을 못 읽으면 그 문제가 통째로 사라지고 앞 문제에 딸려 들어간다. */
 const qnumRe = (strict) => strict
-  ? /(?:^|\n)[ \t]*(?:[•·\-*]\s*)?(\d+)\s*[.)]\s*(\S[^\n]{3,})/g
-  : /(?:^|\n)[ \t]*(?:[•·\-*]\s*)?(\d+)\s*[.)]?\s*(\S[^\n]{3,})/g;
+  ? /(?:^|\n)[ \t]*(?:[•·\-*]\s*)?(\d+)(?:\s*[-~–,]\s*(\d+))?\s*[.)]\s*(\S[^\n]{3,})/g
+  : /(?:^|\n)[ \t]*(?:[•·\-*]\s*)?(\d+)(?:\s*[-~–,]\s*(\d+))?\s*[.)]?\s*(\S[^\n]{3,})/g;
 
 /* 객관식이 끝나고 주관식이 1번부터 다시 시작하는 족보가 있다. 번호가 뒤로
    돌아가므로 그냥 두면 그 뒤가 통째로 번호 미상 한 덩어리가 된다. */
@@ -173,11 +175,13 @@ function scanStarts(texts, strict) {
     if (sm && (sec !== "주" || +sm[1] > last)) {
       sec = "주"; last = +sm[1]; out.push([i, last, sec]); return;
     }
-    const re = qnumRe(strict); let m, pick = null;
+    const re = qnumRe(strict); let m, pick = null, to = 0;
     while ((m = re.exec(head))) {
       if (m[1].length > 3) continue;           // 연도 등 4자리 이상은 문제번호 아님
       const n = +m[1];
-      if (n > last && n <= 400) { pick = n; break; }
+      /* 묶음의 끝 번호로 인정할 만한가 — 앞 번호보다 크고 열 개를 넘지 않아야 한다 */
+      const e = m[2] && m[2].length <= 3 ? +m[2] : 0;
+      if (n > last && n <= 400) { pick = n; to = e > n && e - n <= 10 ? e : 0; break; }
     }
     if (pick === null) {
       /* 번호를 못 읽었다. 문제 화면을 통째로 캡처한 슬라이드가 이렇다.
@@ -188,7 +192,7 @@ function scanStarts(texts, strict) {
         out.push([i, null, sec]);
       return;
     }
-    out.push([i, pick, sec]); last = pick;
+    out.push([i, pick, sec, to]); last = to || pick;
   });
   return out;
 }
@@ -208,13 +212,13 @@ function blocksOf(texts) {
     if (numbered(lo) > numbered(st)) st = lo;
   }
   let lastNum = 0, i0 = 0;
-  return st.map(([pg, num, sec], i) => {
+  return st.map(([pg, num, sec, to], i) => {
     const e = i + 1 < st.length ? st[i + 1][0] : texts.length;
     /* 번호를 모르는 문제도 원래 자리에 오도록 정렬 키를 따로 둔다.
        주관식은 번호가 다시 작아지므로 객관식 뒤로 보낸다. */
     if (sec === "주" && !i0) { i0 = 1; lastNum = Math.max(lastNum, 400); }
-    const ord = num != null ? (lastNum = (sec === "주" ? 400 + num : num)) : lastNum + 0.5;
-    return { qnum: num, sec: sec || "", page: pg + 1, ord, s: pg, e,
+    const ord = num != null ? (lastNum = (sec === "주" ? 400 + (to || num) : (to || num))) : lastNum + 0.5;
+    return { qnum: num, qto: to || 0, sec: sec || "", page: pg + 1, ord, s: pg, e,
              qp: questionPages(texts, pg, e) };
   });
 }
@@ -224,7 +228,8 @@ const qkey = (q) => (q.qnum != null ? `${q.sec || ""}${q.qnum}` : `p${q.page}`);
 /* 화면·결과 PDF 에 쓰는 이름. 쪽 범위는 슬라이드를 찾기 위한 것일 뿐이므로
    Claude 가 슬라이드에서 읽어 준 문제 번호가 있으면 그걸 쓴다. */
 const qlabel = (q) => (q.no ? `${q.no}번`
-  : q.qnum != null ? `${q.sec === "주" ? "주관식 " : ""}${q.qnum}번`
+  : q.qnum != null
+    ? `${q.sec === "주" ? "주관식 " : ""}${q.qnum}${q.qto > q.qnum ? "~" + q.qto : ""}번`
   : (q.to && q.to > q.page ? `${q.page}~${q.to}쪽` : `${q.page}쪽`));
 
 /* iOS·macOS 는 한글 파일명을 자모 분리(NFD)로 저장한다. 화면에는 "기말" 로
@@ -502,7 +507,7 @@ $("f1").onchange = async (ev) => {
         await DB.put("docx", id, { stem: q.stem, presented: q.presented, choices: q.choices, images: q.images });
         items.push({
           id, year: meta.year, term: meta.term, subject: meta.subject,
-          qnum: q.num, sec: "", page: null, ord: q.num,
+          qnum: q.num, qto: q.to || 0, sec: "", page: null, ord: q.to || q.num,
           file: name, source: "docx", s: null, e: null,
           text: [q.stem, ...q.presented, ...q.choices.map((c, i) => `${i + 1}) ${c}`)].join("\n").slice(0, 1400),
         });
@@ -529,7 +534,8 @@ $("f1").onchange = async (ev) => {
       const items = qs.map((q) => ({
         id: `${examKey(meta)}-${q.sec}${q.num}`,
         year: meta.year, term: meta.term, subject: meta.subject,
-        qnum: q.num, sec: q.sec, page: q.page, ord: q.sec === "주" ? 400 + q.num : q.num,
+        qnum: q.num, qto: q.to || 0, sec: q.sec, page: q.page,
+        ord: (q.sec === "주" ? 400 : 0) + (q.to || q.num),
         file: name, source: "exam", crops: q.crops, text: q.text,
       }));
       RAW[name] = { kind: "exam", v: PARSER_VER, n: items.length, np: pages.length, items };
@@ -550,7 +556,7 @@ $("f1").onchange = async (ev) => {
     const items = blks.map((b) => ({
       id: `${examKey(meta)}-${qkey(b)}`,
       year: meta.year, term: meta.term, subject: meta.subject,
-      qnum: b.qnum, sec: b.sec, page: b.page, ord: b.ord,
+      qnum: b.qnum, qto: b.qto || 0, sec: b.sec, page: b.page, ord: b.ord,
       file: name, source: "solution", s: b.s, e: b.e, qp: b.qp,
       text: texts.slice(b.s, b.e).join("\n").trim().slice(0, 1400),
     }));
@@ -767,15 +773,16 @@ $("mgo").onclick = () => {
   });
   if (!ids.length) return err("e5", "번호를 입력해 주세요.");
 
-  const byId = new Map(BANK.map((q) => [q.id, q]));
+  const byId = bankIndex();
   const seen = new Set();
   VERDICTS = [];
   const miss = [];
   for (const id of ids) {
-    if (seen.has(id)) continue;
-    seen.add(id);
     const q = byId.get(id) || spanPick(id);
     if (!q) { miss.push(id.replace(/^.*?-(?=[^-]*$)/, "")); continue; }
+    /* 43·44·45 를 다 적어도 묶음 문제는 한 번만 들어간다 */
+    if (seen.has(q.id)) continue;
+    seen.add(q.id);
     VERDICTS.push({ ...q, no: "", verdict: "picked", pages: "", why: "" });
   }
   if (!VERDICTS.length) {
@@ -791,6 +798,23 @@ $("mgo").onclick = () => {
   setStep(3, "done"); setStep(4, "active");
   $("c4").scrollIntoView({ behavior: "smooth", block: "start" });
 };
+
+/* 문제 번호로 항목을 찾는 표. "43-45" 처럼 묶어 낸 문제는 44·45 로 찾아도
+   같은 항목이 나와야 한다 — Claude 도 사람도 가운데 번호로 부르기 때문이다.
+   진짜 그 번호를 가진 문제가 따로 있으면 그쪽이 이긴다. */
+function bankIndex() {
+  const m = new Map();
+  for (const q of BANK) m.set(q.id, q);
+  for (const q of BANK) {
+    if (!(q.qto > q.qnum)) continue;
+    const key = examKey(q);
+    for (let n = q.qnum + 1; n <= q.qto; n++) {
+      const alias = `${key}-${q.sec || ""}${n}`;
+      if (!m.has(alias)) m.set(alias, q);
+    }
+  }
+  return m;
+}
 
 function grabJSON(s) {
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -841,13 +865,15 @@ $("rd").onclick = () => {
   const arr = grabJSON(raw);
   if (!Array.isArray(arr)) return err("e3", "JSON을 찾지 못했습니다. Claude 답변 맨 아래의 코드블록을 통째로 복사해 주세요.");
 
-  const byId = new Map(BANK.map((q) => [q.id, q]));
+  const byId = bankIndex();
   VERDICTS = [];
-  const miss = [];
+  const miss = [], seen = new Set();
   arr.forEach((v) => {
     const vd = ["solvable", "partial", "unrelated"].includes(v.verdict) ? v.verdict : "partial";
     const q = byId.get(nfc(v.id || "")) || spanPick(v.id);
     if (!q) { if (v.id) miss.push(v.id); return; }
+    if (seen.has(q.id)) return;                  // 묶음 문제를 번호마다 답해 와도 한 번만
+    seen.add(q.id);
     /* no 는 Claude 가 슬라이드에서 읽어 준 문제 번호 (표시용). 짧게 잘라 쓴다. */
     const no = String(v.no == null ? "" : v.no).trim().replace(/번\s*$/, "").slice(0, 12);
     VERDICTS.push({ ...q, no, verdict: vd, pages: v.pages || "", why: v.why || "" });

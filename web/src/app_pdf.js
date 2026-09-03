@@ -15,6 +15,9 @@ const NUMBERED = /^\s*(\d{1,3})\s*번?\s*[.)．](?!\d)\s*(.*)$/;
 /* 구분점 뒤에 바로 숫자가 오는 줄. 대개 소수("38.5도의 발열")지만 "13.3세 남아가…"
    처럼 진짜 문제 머리일 수도 있다. 바로 다음 번호일 때만 문제로 인정한다. */
 const NUMBERED_DEC = /^\s*(\d{1,3})\s*[.)．](\d[^\n]*)$/;
+/* 번호를 묶어 낸 문제 — "43-45. 알코올성 간질환의 …", "37,38. 위에서 …".
+   못 읽으면 그 문제가 통째로 빠지고 앞 문제에 딸려 들어간다. */
+const NUM_RANGE = /^\s*(\d{1,3})\s*[-~–,]\s*(\d{1,3})\s*[.)．]\s*(\S.*)$/;
 const DASH = /^\s*[-–—•*·]\s*(.+)$/;
 const CIRC = /^\s*([①②③④⑤⑥⑦⑧⑨⑩])\s*(.+)$/;
 const KOX = /^\s*[가나다라마바사아자차]\s*[.)]\s*(.+)$/;
@@ -31,6 +34,8 @@ const isStem = (l) => /\?\s*$/.test(l);
 /* 문제처럼 읽히는 줄인가 — 번호만으로 못 가릴 때 쓴다 (DOCX·시험지 PDF 공통) */
 const looksQ = (t) => /[?？]\s*$/.test(t || "")
   || /(것은|것을|고르시오|고르세요|쓰시오|하시오|설명하시오|기술하시오|무엇)/.test(t || "");
+/* 묶음 번호("43-45.")의 끝 번호로 인정할 만한가 — 앞 번호보다 크고 열 개 이내 */
+const spanEnd = (a, b) => (+b > +a && +b - +a <= 10 ? +b : 0);
 
 /* 문단 → 물리적 줄. mc:Fallback 과 w:txbxContent 하위는 건너뛴다.
    둘 다 내려가면 텍스트 상자 내용이 2~3번 중복된다 (파이썬판과 같은 수정). */
@@ -148,9 +153,9 @@ function docxQuestions(buf) {
   let cur = null, expect = 1, maxNum = 0;
   const pre = [], preImgs = [];        // 첫 문제 번호가 나오기 전에 지나간 것들
 
-  const startQ = (n, stem) => {
-    cur = { num: n, stem: (stem || "").trim(), _body: [], images: [] };
-    qs.set(n, cur); expect = 1; maxNum = Math.max(maxNum, n);
+  const startQ = (n, stem, to) => {
+    cur = { num: n, to: to || 0, stem: (stem || "").trim(), _body: [], images: [] };
+    qs.set(n, cur); expect = 1; maxNum = Math.max(maxNum, to || n);
     return cur;
   };
   /* 문제 번호는 대개 커지기만 하지만, 복원하다 순서가 뒤바뀐 족보가 있다
@@ -180,6 +185,11 @@ function docxQuestions(buf) {
     const isList = p.getElementsByTagNameNS(NS.w, "numPr").length > 0;
     for (const ln of lines) {
       if (!ln || NOISE.test(ln)) continue;
+      const rm = NUM_RANGE.exec(ln);
+      if (rm && isNew(+rm[1], rm[3]) && spanEnd(rm[1], rm[2])) {
+        startQ(+rm[1], rm[3], spanEnd(rm[1], rm[2]));
+        continue;
+      }
       const m = NUMBERED.exec(ln);
       if (m) {
         const n = +m[1];
@@ -246,6 +256,8 @@ function docxQuestions(buf) {
    배제하면 그 선지·문제가 통째로 사라진다. 대신 줄이 왼쪽 여백에서 시작하는지,
    위에 빈 줄이 있는지, 번호가 바로 다음 번호인지로 가른다. */
 const PNUM = /^\s*(\d{1,3})\s*[.)．]\s*(.*)$/;
+/* 번호를 묶어 낸 문제 — "43-45. …", "37,38. …" */
+const PRANGE = /^\s*(\d{1,3})\s*[-~–,]\s*(\d{1,3})\s*[.)．]\s*(\S.*)$/;
 /* 객관식이 끝나고 주관식이 1번부터 다시 시작하는 자리 */
 const PSUBJ = /^\s*[[［(（]?\s*주관식/;
 
@@ -319,6 +331,15 @@ function pdfExamQuestions(pages) {
       heads.push({ mark: true, pi, top: l.y + l.h });
       return;
     }
+    if (l.x <= left + 4) {                          // 묶음 번호는 문제 머리에만 나온다
+      const rm = PRANGE.exec(l.t);
+      const to = rm ? spanEnd(rm[1], rm[2]) : 0;
+      if (to && +rm[1] > maxNum) {
+        cur = { sec, num: +rm[1], to, pi, li, top: l.y + l.h };
+        heads.push(cur); expect = 1; maxNum = to;
+        return;
+      }
+    }
     const m = PNUM.exec(l.t);
     if (!m || l.x > left + 4) return;               // 들여쓴 줄은 선지·표 안의 숫자다
     const n = +m[1];
@@ -356,7 +377,7 @@ function pdfExamQuestions(pages) {
       crops.push({ p, x: x0, y: y0, w: x1 - x0, h: y1 - y0, g: blankRows(pgo, y1, y0) });
       for (const l of pgo.lines) if (l.y + l.h <= y1 + 1 && l.y >= y0 - 1) txt.push(l.t);
     }
-    return { mark: !!h.mark, sec: h.sec, num: h.num, page: h.pi + 1, lastPage: endP + 1,
+    return { mark: !!h.mark, sec: h.sec, num: h.num, to: h.to || 0, page: h.pi + 1, lastPage: endP + 1,
              crops, text: txt.join("\n").slice(0, 1400) };
   }).filter((q) => !q.mark && q.crops.length);
 }
@@ -880,7 +901,8 @@ function projectInstructions(docxFiles, chunkFiles) {
   예: 2023-기말-감면-6
   중간/기말 구분이 없는 시험은 학기 칸을 빼고 연도-과목-문제번호 로 씁니다
   예: 2023-호흡기계-12
-  주관식은 번호 앞에 주 를 붙입니다 — 예: 2023-기말-소화기-주1`);
+  주관식은 번호 앞에 주 를 붙입니다 — 예: 2023-기말-소화기-주1
+  "43-45." 처럼 번호를 묶어 낸 문제는 그중 아무 번호나 써도 됩니다 (43 이든 44 든 같은 문제).`);
   if (chunkFiles.length) lines.push(
 `- 풀이 슬라이드 조각 (${chunkFiles.join(", ")})
   시험지가 없는 연도라 풀이 파일을 자르기만 한 것입니다. 문제·해설·출처 슬라이드가
@@ -891,6 +913,7 @@ function projectInstructions(docxFiles, chunkFiles) {
   중간/기말 구분이 없는 시험은 학기 칸을 뺍니다 — 예: 2023-호흡기계-p88~90
   id 에는 쪽 위에 찍힌 번호만 쓰고, 슬라이드 안에 보이는 문제 번호로 바꾸지 마세요.
   대신 슬라이드에 보이는 문제 번호를 no 항목에 따로 적어 주세요 (예: "no": "268").
+  슬라이드에 "43-45." 처럼 번호가 묶여 있으면 no 에 그대로 적으면 됩니다.
   그림뿐이라 번호가 안 보이면 no 는 생략하면 됩니다.`);
 
   return `이 Project 에는 의과대학 기출 족보가 들어 있습니다.

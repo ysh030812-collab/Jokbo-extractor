@@ -114,5 +114,13 @@ ck('16번 지문', s23.find((q) => q.num === 16).stem, '[진영주] 간농양에
 ck('16번 선지 5개', s23.find((q) => q.num === 16).choices.length, 5);
 ck('111번 선지를 16번이 뺏어가지 않는다', s23.find((q) => q.num === 111).choices.length, 3);
 
+/* 번호를 묶어 낸 문제 */
+const rg = M.docxQuestions(load('range.docx'));
+ck('묶음 번호 문제', rg.map((q) => q.num), [36, 37, 39, 43, 46]);
+ck('묶음 끝 번호', rg.map((q) => q.to || 0), [0, 38, 0, 45, 0]);
+ck('묶음 문제 지문', rg.find((q) => q.num === 43).stem,
+  '알코올성 간질환의 3가지 질환 스펙트럼을 쓰고 각각의 특징을 간략히 기술하시오.');
+ck('묶음 다음 문제의 선지를 뺏지 않는다', rg.find((q) => q.num === 46).choices, ['가', '나']);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
