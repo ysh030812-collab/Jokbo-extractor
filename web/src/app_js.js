@@ -350,7 +350,7 @@ const info = (id, msg) => { $(id).textContent = msg || ""; $(id).classList.toggl
 /* ── 1. 족보 등록 ─────────────────────────────────────────────── */
 /* 파서를 고쳐도 이미 등록된 파일은 예전 결과 그대로 남는다. 파일마다 어느 판으로
    읽었는지 적어 두고, 낡았으면 다시 올리라고 알려 준다. 올리기 전에는 지우지 않는다. */
-const PARSER_VER = 4;
+const PARSER_VER = 5;
 /* 같은 문제가 여러 파일에 있으면 원본이 가장 온전한 것을 쓴다.
    풀이 슬라이드(해설까지 있음) > 시험지 PDF(표·그림 그대로) > 시험지 DOCX(다시 조판) */
 const SRANK = { solution: 3, exam: 2, docx: 1 };
@@ -380,7 +380,8 @@ async function loadBank() {
   /* 다시 들어왔을 때는 등록·준비가 이미 끝나 있다. 머리줄만 남기고 접어 둔다.
      아직 할 일이 남은 단계는 펴 둔다 — 접힌 안쪽에 눌러야 할 버튼이 숨으면 안 된다. */
   if (Object.keys(RAW).length) {
-    setFold(1, !Object.keys(RAW).some((n) => (RAW[n].v || 1) < PARSER_VER));
+    const { redo, again } = staleFiles();
+    setFold(1, !(redo.length + again.length));   // 다시 읽을 것이 있으면 펴 둔다
     setFold(2, !planProject().need.length);
   }
 }
@@ -460,9 +461,14 @@ function renderBank() {
   renderProject();
   renderManual();
 
-  const old = names.filter((n) => (RAW[n].v || 1) < PARSER_VER);   // names 는 이미 과목으로 걸렀다
-  $("old").hidden = !old.length;
-  if (old.length) $("oldn").textContent = old.length + "개";
+  const { redo, again } = staleFiles();
+  $("old").hidden = !(redo.length + again.length);
+  $("redo").hidden = !redo.length;
+  const say = [];
+  if (redo.length) say.push(`파일 ${redo.length}개는 원본을 그대로 갖고 있어 여기서 바로 다시 읽을 수 있습니다.`);
+  if (again.length) say.push(`시험지 DOCX ${again.length}개는 원본이 없어 같은 파일을 다시 골라 주세요 — 덮어쓰기만 하고 나머지는 그대로 둡니다.`);
+  $("oldn").textContent = "문제를 읽는 방식이 개선되었습니다. 예전 방식으로 읽어 둔 결과라 "
+    + "문제가 붙어 있거나 빠져 있을 수 있습니다. " + say.join(" ");
 }
 
 async function delFile(name) {
@@ -480,6 +486,67 @@ async function delFile(name) {
   renderManual();
 }
 
+/* 파일 하나를 읽어 RAW 항목으로 만든다. 처음 등록할 때와, 파서를 고친 뒤 원본으로
+   다시 읽을 때 같은 길을 쓴다. 못 읽으면 까닭을 담아 던진다. */
+async function parseFile(name, meta, buf, onProg) {
+  const key = examKey(meta);
+
+  if (/\.docx$/i.test(name)) {                    // 시험지 DOCX
+    if (name.includes("풀이")) throw new Error("풀이 DOCX는 지원하지 않음");
+    let qs;
+    try { qs = docxQuestions(buf); } catch (e) { throw new Error("DOCX 읽기 실패"); }
+    if (!qs.length) throw new Error("문제 0개");
+    const items = [];
+    for (const q of qs) {
+      const id = `${key}-${q.num}`;
+      await DB.put("docx", id, { stem: q.stem, presented: q.presented, choices: q.choices, images: q.images });
+      items.push({
+        id, year: meta.year, term: meta.term, subject: meta.subject,
+        qnum: q.num, qto: q.to || 0, sec: "", page: null, ord: q.to || q.num,
+        file: name, source: "docx", s: null, e: null,
+        text: [q.stem, ...q.presented, ...q.choices.map((c, i) => `${i + 1}) ${c}`)].join("\n").slice(0, 1400),
+      });
+    }
+    if (onProg) onProg(1);
+    return { kind: "doc", v: PARSER_VER, n: items.length, items };
+  }
+
+  if (!name.includes("풀이")) {                    // 시험지 PDF — 문제 자리를 오려 쓴다
+    let pages;
+    try { pages = await pageLines(buf.slice(0), (p, n) => onProg && onProg(p / n)); }
+    catch (e) { throw new Error("읽기 실패"); }
+    const qs = pdfExamQuestions(pages);
+    if (!qs.length) throw new Error("문제 0개 — 스캔한 시험지는 글자가 없어 읽지 못합니다");
+    await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
+    const items = qs.map((q) => ({
+      id: `${key}-${q.sec}${q.num}`,
+      year: meta.year, term: meta.term, subject: meta.subject,
+      qnum: q.num, qto: q.to || 0, sec: q.sec, page: q.page,
+      ord: (q.sec === "주" ? 400 : 0) + (q.to || q.num),
+      file: name, source: "exam", crops: q.crops, text: q.text,
+    }));
+    return { kind: "exam", v: PARSER_VER, n: items.length, np: pages.length, items };
+  }
+
+  let texts;                                      // 풀이 슬라이드 PDF
+  try { texts = await pageTexts(buf.slice(0), (p, n) => onProg && onProg(p / n)); }
+  catch (e) { throw new Error("읽기 실패"); }
+  const blks = blocksOf(texts);
+  if (!blks.length) throw new Error("문제 0개");
+  await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
+  const items = blks.map((b) => ({
+    id: `${key}-${qkey(b)}`,
+    year: meta.year, term: meta.term, subject: meta.subject,
+    qnum: b.qnum, qto: b.qto || 0, sec: b.sec, page: b.page, ord: b.ord,
+    file: name, source: "solution", s: b.s, e: b.e, qp: b.qp,
+    text: texts.slice(b.s, b.e).join("\n").trim().slice(0, 1400),
+  }));
+  return { kind: "sol", v: PARSER_VER, n: items.length, np: texts.length, items };
+}
+
+const NAME_HINT = "\n이름은 '2023 감면 기말 풀이.pdf' 또는 '2023 감면 기말.docx' 형식이어야 합니다." +
+  "\n중간/기말 구분이 없는 시험은 '2023 호흡기계 풀이.pdf' 처럼 빼면 됩니다.";
+
 $("f1").onchange = async (ev) => {
   const files = [...ev.target.files]; ev.target.value = "";
   if (!files.length) return;
@@ -493,75 +560,11 @@ $("f1").onchange = async (ev) => {
     const name = nfc(f.name);                      // 자모 분리(NFD) 파일명 대응
     const meta = parseName(name);
     if (!meta) { skipped.push(`${name} — ${whyNoParse(name)}`); continue; }
-    const buf = await f.arrayBuffer();
-
-    if (/\.docx$/i.test(name)) {                   // 시험지 DOCX
-      if (name.includes("풀이")) { skipped.push(name + " (풀이 DOCX는 지원하지 않음)"); continue; }
-      let qs;
-      try { qs = docxQuestions(buf); }
-      catch (e) { skipped.push(name + " (DOCX 읽기 실패)"); continue; }
-      if (!qs.length) { skipped.push(name + " (문제 0개)"); continue; }
-      const items = [];
-      for (const q of qs) {
-        const id = `${examKey(meta)}-${q.num}`;
-        await DB.put("docx", id, { stem: q.stem, presented: q.presented, choices: q.choices, images: q.images });
-        items.push({
-          id, year: meta.year, term: meta.term, subject: meta.subject,
-          qnum: q.num, qto: q.to || 0, sec: "", page: null, ord: q.to || q.num,
-          file: name, source: "docx", s: null, e: null,
-          text: [q.stem, ...q.presented, ...q.choices.map((c, i) => `${i + 1}) ${c}`)].join("\n").slice(0, 1400),
-        });
-      }
-      RAW[name] = { kind: "doc", v: PARSER_VER, n: items.length, items };
-      added.push(name);
-      bar.style.width = (((fi + 1) / files.length) * 100).toFixed(1) + "%";
-      continue;
-    }
-
-    if (!name.includes("풀이")) {                   // 시험지 PDF
-      let pages;
-      try {
-        pages = await pageLines(buf.slice(0), (p, n) => {
-          bar.style.width = (((fi + p / n) / files.length) * 100).toFixed(1) + "%";
-        });
-      } catch (e) { skipped.push(name + " (읽기 실패)"); continue; }
-      const qs = pdfExamQuestions(pages);
-      if (!qs.length) {
-        skipped.push(name + " (문제 0개 — 스캔한 시험지는 글자가 없어 읽지 못합니다)");
-        continue;
-      }
-      await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
-      const items = qs.map((q) => ({
-        id: `${examKey(meta)}-${q.sec}${q.num}`,
-        year: meta.year, term: meta.term, subject: meta.subject,
-        qnum: q.num, qto: q.to || 0, sec: q.sec, page: q.page,
-        ord: (q.sec === "주" ? 400 : 0) + (q.to || q.num),
-        file: name, source: "exam", crops: q.crops, text: q.text,
-      }));
-      RAW[name] = { kind: "exam", v: PARSER_VER, n: items.length, np: pages.length, items };
-      added.push(name);
-      continue;
-    }
-
-    let texts;
     try {
-      texts = await pageTexts(buf.slice(0), (p, n) => {
-        bar.style.width = (((fi + p / n) / files.length) * 100).toFixed(1) + "%";
-      });
-    } catch (e) { skipped.push(name + " (읽기 실패)"); continue; }
-
-    const blks = blocksOf(texts);
-    if (!blks.length) { skipped.push(name + " (문제 0개)"); continue; }
-    await DB.put("files", name, new Blob([buf], { type: "application/pdf" }));
-    const items = blks.map((b) => ({
-      id: `${examKey(meta)}-${qkey(b)}`,
-      year: meta.year, term: meta.term, subject: meta.subject,
-      qnum: b.qnum, qto: b.qto || 0, sec: b.sec, page: b.page, ord: b.ord,
-      file: name, source: "solution", s: b.s, e: b.e, qp: b.qp,
-      text: texts.slice(b.s, b.e).join("\n").trim().slice(0, 1400),
-    }));
-    RAW[name] = { kind: "sol", v: PARSER_VER, n: items.length, np: texts.length, items };
-    added.push(name);
+      RAW[name] = await parseFile(name, meta, await f.arrayBuffer(),
+        (r) => { bar.style.width = (((fi + r) / files.length) * 100).toFixed(1) + "%"; });
+      added.push(name);
+    } catch (e) { skipped.push(`${name} (${e.message})`); }
   }
   bar.style.width = "100%";
   rebuild();
@@ -576,9 +579,47 @@ $("f1").onchange = async (ev) => {
   await saveRaw();
   setTimeout(() => { $("b1").hidden = true; bar.style.width = "0"; }, 400);
   renderBank();
-  if (skipped.length) err("e1", "건너뜀\n· " + skipped.join("\n· ") +
-    "\n이름은 '2023 감면 기말 풀이.pdf' 또는 '2023 감면 기말.docx' 형식이어야 합니다." +
-    "\n중간/기말 구분이 없는 시험은 '2023 호흡기계 풀이.pdf' 처럼 빼면 됩니다.");
+  if (skipped.length) err("e1", "건너뜀\n· " + skipped.join("\n· ") + NAME_HINT);
+};
+
+/* ── 파서를 고친 뒤 이미 등록된 파일 ─────────────────────────────
+   PDF 는 원본을 그대로 들고 있으므로 여기서 다시 읽으면 된다. 시험지 DOCX 만
+   원본이 없어(문제만 뽑아 뒀다) 같은 파일을 다시 골라 받아야 한다.
+   과목을 걸러 보고 있어도 놓치지 않도록 등록된 파일 전체에서 센다. */
+function staleFiles() {
+  const all = Object.keys(RAW).filter((n) => (RAW[n].v || 1) < PARSER_VER);
+  return { redo: all.filter((n) => RAW[n].kind !== "doc"),
+           again: all.filter((n) => RAW[n].kind === "doc") };
+}
+
+$("redo").onclick = async () => {
+  const { redo } = staleFiles();
+  if (!redo.length) return;
+  const btn = $("redo"); btn.disabled = true; btn.textContent = "다시 읽는 중…";
+  err("e1", ""); $("b1").hidden = false;
+  const bar = $("b1").firstElementChild;
+  const failed = [];
+  for (let i = 0; i < redo.length; i++) {
+    const name = redo[i], q = RAW[name].items[0];
+    const meta = q ? { year: q.year, term: q.term, subject: q.subject } : parseName(name);
+    const blob = meta && await DB.get("files", name);
+    if (!blob) { failed.push(`${name} (원본이 없습니다 — 다시 올려 주세요)`); continue; }
+    try {
+      RAW[name] = await parseFile(name, meta, await blob.arrayBuffer(),
+        (r) => { bar.style.width = (((i + r) / redo.length) * 100).toFixed(1) + "%"; });
+    } catch (e) { failed.push(`${name} (${e.message})`); }
+  }
+  bar.style.width = "100%";
+  rebuild();
+  MADE = [];
+  /* 다시 읽으면 문제 id 가 달라질 수 있다. 앞서 뽑아 둔 목록은 버린다. */
+  VERDICTS = []; $("qs").innerHTML = "";
+  setStep(3, "active"); setStep(4, "locked");
+  await saveRaw();
+  setTimeout(() => { $("b1").hidden = true; bar.style.width = "0"; }, 400);
+  btn.disabled = false; btn.textContent = "여기서 다시 읽기";
+  renderBank();
+  if (failed.length) err("e1", "다시 읽지 못한 파일\n· " + failed.join("\n· "));
 };
 
 $("clr").onclick = async () => {
