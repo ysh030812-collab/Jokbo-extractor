@@ -816,6 +816,16 @@ function bankIndex() {
   return m;
 }
 
+/* Claude 가 pages 자리에 쪽 번호 대신 슬라이드 제목을 보내오는 일이 있다.
+   그대로 두면 "강의안 Congenital Anomaly(날문협착)쪽" 처럼 찍힌다.
+   쪽 번호로 읽히는 것만 받고, 아니면 버린다 (why 에 적힌 설명은 그대로 남는다). */
+function cleanPages(v) {
+  const t = String(v == null ? "" : v).replace(/\s/g, "")
+    .replace(/(쪽|페이지|pages?|p\.)/gi, "")
+    .replace(/^p(?=\d)/i, "");                  // 풀이 출처에 흔한 "p52" 도 받는다
+  return /^\d{1,4}([-~–,]\d{1,4})*$/.test(t) ? t.replace(/,/g, ", ") : "";
+}
+
 function grabJSON(s) {
   const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fence) { try { return JSON.parse(fence[1]); } catch (e) { /* fall through */ } }
@@ -876,7 +886,7 @@ $("rd").onclick = () => {
     seen.add(q.id);
     /* no 는 Claude 가 슬라이드에서 읽어 준 문제 번호 (표시용). 짧게 잘라 쓴다. */
     const no = String(v.no == null ? "" : v.no).trim().replace(/번\s*$/, "").slice(0, 12);
-    VERDICTS.push({ ...q, no, verdict: vd, pages: v.pages || "", why: v.why || "" });
+    VERDICTS.push({ ...q, no, verdict: vd, pages: cleanPages(v.pages), why: v.why || "" });
   });
   if (!VERDICTS.length) {
     return err("e3", "등록된 족보와 일치하는 문제가 없습니다." +

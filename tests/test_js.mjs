@@ -6,9 +6,9 @@ const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web',
 const src = fs.readFileSync(path.join(SRC, 'app_js.js'), 'utf8');
 const cut = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b); if (i<0||j<0) throw Error('cut fail '+a); return src.slice(i, j); };
 const code = cut('const RE_MARK', '/* ── 만든 파일을')
-           + cut('function grabJSON', '\n$("rd")');
+           + cut('/* Claude 가 pages 자리에', '\n$("rd")');
 const M = {};
-new Function('exports', code + '\nObject.assign(exports,{scanStarts,blocksOf,parseName,examKey,examName,termOrd,grabJSON});')(M);
+new Function('exports', code + '\nObject.assign(exports,{scanStarts,blocksOf,parseName,examKey,examName,termOrd,grabJSON,cleanPages});')(M);
 
 // 실제 2023 풀이 텍스트 (드라이브에서 읽은 구조 그대로)
 const P2023 = [
@@ -81,6 +81,15 @@ for (const base of ['2020 감면 기말 풀이.pdf','2023 감면 기말.docx','2
 console.log(`[${N.parseName('강의안 73.pdf')===null?'PASS':'FAIL'}] 형식 아닌 이름은 여전히 null`);
 console.log('  사유 안내:', N.whyNoParse('강의안 73.pdf'), '/', N.whyNoParse('감면 기말 풀이.pdf'));
 
+
+/* pages 는 강의안 쪽 번호다. Claude 가 슬라이드 제목을 보내오면
+   "강의안 Congenital Anomaly(날문협착)쪽" 처럼 찍히므로 걸러 낸다. */
+ck('쪽 번호는 그대로', ['8', '8-9', '8, 12', '8~9'].map(M.cleanPages), ['8', '8-9', '8, 12', '8~9']);
+ck('쪽·페이지·p 는 떼고 받는다', ['12쪽', '8페이지', 'p52', 'page 9', 7].map(M.cleanPages),
+  ['12', '8', '52', '9', '7']);
+ck('슬라이드 제목은 버린다',
+  ['Congenital Anomaly(날문협착)', '3장 슬라이드', '날문협착 4쪽', '', null, undefined].map(M.cleanPages),
+  ['', '', '', '', '', '']);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
