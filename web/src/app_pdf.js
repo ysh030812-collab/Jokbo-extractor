@@ -425,6 +425,29 @@ const VLABEL = {
   picked: ["직접 고름", "#1B64DA", "#E8F2FE"],
 };
 
+/* 머리줄에 붙는 알약. 그린 뒤 다음 알약이 시작될 x 를 돌려준다.
+   주관식 정답처럼 긴 글이 오면 머리줄을 넘어가므로 폭에 맞춰 줄인다. */
+function chip(g, x, txt, fg, bg, right = PW - 92) {
+  g.font = `700 10.5px ${FONT}`;
+  let t = String(txt);
+  while (t.length > 1 && x + g.measureText(t).width + 13 > right) t = t.slice(0, -2) + "…";
+  const w = g.measureText(t).width + 13;
+  if (w > right - x) return x;                    // 자리가 없으면 그리지 않는다
+  g.fillStyle = bg; roundRect(g, x, 16, w, 15, 4); g.fill();
+  g.fillStyle = fg; g.fillText(t, x + 6.5, 23.5);
+  return x + w + 7;
+}
+
+/* 정답 표시. 시험지에 답이 없는 해가 있어 Claude 가 풀어 준 것을 받는다.
+   사람이 매긴 것이 아니므로 반드시 '추정' 이라고 밝힌다. */
+const ANS_FG = "#B54708", ANS_BG = "#FDF3E3";
+const ansChip = (q) => (q.ans ? `정답(추정) ${q.ans}` : "");
+/* 선지 번호로 읽히면 그 선지를 짚어 줄 수 있다 */
+const ansNo = (q) => {
+  const m = /^(\d{1,2})$/.exec(String(q.ans || "").trim());
+  return m ? +m[1] : 0;
+};
+
 /* 문제 페이지의 배경·라벨·카드 테두리 (슬라이드는 이 위에 벡터로 얹는다) */
 function decorQuestion(q, slots, pageNo, part) {
   return (g) => {
@@ -440,20 +463,30 @@ function decorQuestion(q, slots, pageNo, part) {
     g.fillText(head, 29, 23);
     let x = 29 + g.measureText(head).width + 9;
     const [txt, fg, bg] = VLABEL[q.verdict] || VLABEL.partial;
-    g.font = `700 10.5px ${FONT}`;
-    const cw = g.measureText(txt).width + 13;
-    g.fillStyle = bg; roundRect(g, x, 16, cw, 15, 4); g.fill();
-    g.fillStyle = fg; g.fillText(txt, x + 6.5, 23.5);
-    x += cw + 7;
-    if (q.pages) {
-      const p = `강의안 ${q.pages}쪽`;
-      const pw = g.measureText(p).width + 13;
-      g.fillStyle = "#E8F2FE"; roundRect(g, x, 16, pw, 15, 4); g.fill();
-      g.fillStyle = "#1B64DA"; g.fillText(p, x + 6.5, 23.5);
-    }
+    x = chip(g, x, txt, fg, bg);
+    if (q.ans) x = chip(g, x, ansChip(q), ANS_FG, ANS_BG);
+    if (q.pages) x = chip(g, x, `강의안 ${q.pages}쪽`, "#1B64DA", "#E8F2FE");
     if (part) {
       g.font = `600 10.5px ${FONT}`; g.fillStyle = MUTE;
       g.textAlign = "right"; g.fillText(part, PW - 18, 23); g.textAlign = "left";
+    }
+    /* 번호로 못 짚는 답(주관식 등)은 머리줄에 다 안 들어간다. 카드 아래가
+       비어 있으면 거기에 온전히 적어 준다. */
+    if (q.ans && !ansNo(q) && slots.length) {
+      const low = Math.min(...slots.map(([, yb]) => yb));   // 가장 아래 카드의 바닥
+      let y = PH - low + 16;                                // 캔버스 좌표로
+      if (PH - y > 26) {
+        g.textBaseline = "alphabetic";
+        g.font = `700 12px ${FONT}`; g.fillStyle = ANS_FG;
+        const lead = "정답(추정)  ";
+        g.fillText(lead, 30, y);
+        const lx = 30 + g.measureText(lead).width;
+        g.font = `400 12px ${FONT}`;
+        for (const l of wrapText(g, String(q.ans), PW - lx - 30).slice(0, 3)) {
+          g.fillText(l, lx, y); y += 17;
+        }
+        g.textBaseline = "middle";
+      }
     }
     g.font = `500 9.5px ${FONT}`; g.fillStyle = MUTE;
     g.textAlign = "right"; g.fillText(String(pageNo), PW - 18, PH - 12); g.textAlign = "left";
@@ -475,17 +508,9 @@ function decorDocx(q, data, pageNo, imgBoxes) {
     g.fillText(head, 29, 23);
     let hx = 29 + g.measureText(head).width + 9;
     const [txt, fg, bg] = VLABEL[q.verdict] || VLABEL.partial;
-    g.font = `700 10.5px ${FONT}`;
-    const cw = g.measureText(txt).width + 13;
-    g.fillStyle = bg; roundRect(g, hx, 16, cw, 15, 4); g.fill();
-    g.fillStyle = fg; g.fillText(txt, hx + 6.5, 23.5);
-    hx += cw + 7;
-    if (q.pages) {
-      const pg = `강의안 ${q.pages}쪽`;
-      const pw = g.measureText(pg).width + 13;
-      g.fillStyle = "#E8F2FE"; roundRect(g, hx, 16, pw, 15, 4); g.fill();
-      g.fillStyle = "#1B64DA"; g.fillText(pg, hx + 6.5, 23.5);
-    }
+    hx = chip(g, hx, txt, fg, bg);
+    if (q.ans) hx = chip(g, hx, ansChip(q), ANS_FG, ANS_BG);
+    if (q.pages) hx = chip(g, hx, `강의안 ${q.pages}쪽`, "#1B64DA", "#E8F2FE");
     g.font = `600 10.5px ${FONT}`; g.fillStyle = MUTE; g.textAlign = "right";
     g.fillText("시험지 재구성", PW - 18, 23); g.textAlign = "left";
 
@@ -506,13 +531,25 @@ function decorDocx(q, data, pageNo, imgBoxes) {
       for (const l of wrapText(g, t, CW - indent)) { g.fillText(l, M + indent, y); y += 19; }
     }
     if ((data.choices || []).length) y += 6;
+    const hit = ansNo(q);                          // 짚어 줄 선지 (없으면 0)
     (data.choices || []).forEach((c, i) => {
-      g.font = `600 12.5px ${FONT}`; g.fillStyle = "#6B8CAD";
+      const on = hit === i + 1;
+      g.font = `${on ? 700 : 600} 12.5px ${FONT}`; g.fillStyle = on ? ANS_FG : "#6B8CAD";
       g.fillText(`${i + 1})`, M + indent, y);
-      g.font = `400 12.5px ${FONT}`; g.fillStyle = INK;
+      g.font = `${on ? 600 : 400} 12.5px ${FONT}`; g.fillStyle = on ? ANS_FG : INK;
       for (const l of wrapText(g, c, CW - indent - 24)) { g.fillText(l, M + indent + 24, y); y += 19; }
       y += 2;
     });
+    /* 번호로 못 짚는 답(주관식 등)은 아래에 한 줄로 적어 준다 */
+    if (q.ans && !hit) {
+      y += 8;
+      g.font = `700 12px ${FONT}`; g.fillStyle = ANS_FG;
+      const lead = "정답(추정)  ";
+      g.fillText(lead, M + indent, y);
+      g.font = `400 12px ${FONT}`;
+      const lx = M + indent + g.measureText(lead).width;
+      for (const l of wrapText(g, String(q.ans), CW - (lx - M))) { g.fillText(l, lx, y); y += 18; }
+    }
 
     g.font = `500 9.5px ${FONT}`; g.fillStyle = MUTE; g.textAlign = "right";
     g.fillText(String(pageNo), PW - 18, PH - 12); g.textAlign = "left";
@@ -945,8 +982,14 @@ pages 는 근거가 된 **강의안 쪽 번호**입니다. 숫자만 씁니다 �
 why 는 한 줄 이유입니다 — 근거가 된 슬라이드 제목은 여기에 적으면 됩니다.
 no 는 슬라이드에 보이는 문제 번호로, 결과물에 그대로 찍힙니다 (모르면 빼세요).
 
+## 정답
+시험지에 정답이 안 적혀 있는 해가 있습니다. 고른 문제는 **직접 풀어서** answer 에
+정답을 적어 주세요 — 객관식은 선지 번호만("4"), 주관식은 핵심 답만 한 줄로 씁니다.
+확신이 없으면 answer 를 빼세요. 결과물에는 "정답(추정)" 이라고 찍힙니다.
+시험지에 이미 정답이 적혀 있으면 그 답을 그대로 옮기면 됩니다.
+
 \`\`\`json
-[{"id":"2023-기말-감면-6","verdict":"solvable","pages":"8-9","why":"역전사효소 억제제 목록이 강의안에 그대로 있음"},
- {"id":"2020-기말-감면-p442~444","no":"268","verdict":"partial","pages":"12","why":"광견병 알고리즘은 강의안에 일부만 있음"}]
+[{"id":"2023-기말-감면-6","verdict":"solvable","answer":"4","pages":"8-9","why":"역전사효소 억제제 목록이 강의안에 그대로 있음"},
+ {"id":"2020-기말-감면-p442~444","no":"268","verdict":"partial","answer":"2","pages":"12","why":"광견병 알고리즘은 강의안에 일부만 있음"}]
 \`\`\``;
 }

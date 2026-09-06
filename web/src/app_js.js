@@ -824,7 +824,7 @@ $("mgo").onclick = () => {
     /* 43·44·45 를 다 적어도 묶음 문제는 한 번만 들어간다 */
     if (seen.has(q.id)) continue;
     seen.add(q.id);
-    VERDICTS.push({ ...q, no: "", verdict: "picked", pages: "", why: "" });
+    VERDICTS.push({ ...q, no: "", verdict: "picked", ans: "", pages: "", why: "" });
   }
   if (!VERDICTS.length) {
     return err("e5", "적으신 번호가 등록된 족보에 없습니다.\n1단계 파일 목록의 문제 수를 확인해 주세요.");
@@ -865,6 +865,17 @@ function cleanPages(v) {
     .replace(/(쪽|페이지|pages?|p\.)/gi, "")
     .replace(/^p(?=\d)/i, "");                  // 풀이 출처에 흔한 "p52" 도 받는다
   return /^\d{1,4}([-~–,]\d{1,4})*$/.test(t) ? t.replace(/,/g, ", ") : "";
+}
+
+/* 정답. 시험지에 답이 없는 해가 있어 Claude 가 풀어 준 것을 받는다.
+   객관식은 선지 번호, 주관식은 짧은 글. 사람이 매긴 것이 아니므로
+   결과물에는 늘 "정답(추정)" 으로 찍는다. */
+function cleanAns(v) {
+  const t = String(v == null ? "" : v).trim()
+    .replace(/^정답\s*[:：]?\s*/, "")
+    .replace(/\s*번\s*$/, "")
+    .replace(/^\((\d{1,2})\)$/, "$1");
+  return t.slice(0, 60);
 }
 
 function grabJSON(s) {
@@ -927,7 +938,8 @@ $("rd").onclick = () => {
     seen.add(q.id);
     /* no 는 Claude 가 슬라이드에서 읽어 준 문제 번호 (표시용). 짧게 잘라 쓴다. */
     const no = String(v.no == null ? "" : v.no).trim().replace(/번\s*$/, "").slice(0, 12);
-    VERDICTS.push({ ...q, no, verdict: vd, pages: cleanPages(v.pages), why: v.why || "" });
+    VERDICTS.push({ ...q, no, verdict: vd, ans: cleanAns(v.answer),
+                    pages: cleanPages(v.pages), why: v.why || "" });
   });
   if (!VERDICTS.length) {
     return err("e3", "등록된 족보와 일치하는 문제가 없습니다." +
@@ -954,6 +966,7 @@ function renderVerdicts() {
           <span class="who">${esc(examName(v))} ${qlabel(v)}</span>
           <span class="kind ${v.source === "solution" ? "sol" : "doc"}">${v.source === "solution" ? "풀이" : "시험지"}</span>
           <span class="tag ${v.verdict}">${LABEL[v.verdict]}</span>
+          ${v.ans ? `<span class="tag ans">정답(추정) ${esc(v.ans)}</span>` : ""}
           ${v.pages ? `<span class="tag pg">강의안 ${v.pages}쪽</span>` : ""}
         </div>
         ${v.why ? `<div class="why">${esc(v.why)}</div>` : ""}

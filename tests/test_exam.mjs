@@ -195,6 +195,41 @@ await pg.waitForSelector('#qs .q');
 ck('고른 문제', await pg.$$eval('#qs .q .who', (ls) => ls.map((l) => l.innerText.replace(/^.*기말 /, ''))),
   ['1번', '4번', '5번', '6번']);
 
+/* ── 정답 표시 ─────────────────────────────────────────────────
+   시험지에 답이 없는 해가 있어 Claude 가 풀어 준 것을 받아 찍는다.
+   사람이 매긴 것이 아니므로 반드시 "정답(추정)" 으로 나가야 한다. */
+await pg.fill('#ta', '```json\n' + JSON.stringify([
+  { id: '2024-기말-시험과목-1', verdict: 'solvable', answer: '4', pages: '3', why: '선지 번호' },
+  { id: '2024-기말-시험과목-4', verdict: 'partial', answer: '두 분석의 차이를 서술', pages: '4', why: '글로 온 답' },
+  { id: '2024-기말-시험과목-5', verdict: 'solvable', pages: '5', why: '답을 모르면 빼도 된다' },
+]) + '\n```');
+await pg.click('#rd');
+await pg.waitForSelector('#qs .q');
+ck('정답 뱃지는 답이 온 문제에만',
+  await pg.$$eval('#qs .q', (ls) => ls.map((l) => (l.querySelector('.tag.ans') || {}).textContent || '')),
+  ['정답(추정) 4', '정답(추정) 두 분석의 차이를 서술', '']);
+
+await pg.$$eval('#qs .q input', (cs) => cs.forEach((c) => { if (!c.checked) c.click(); }));
+await pg.click('#mk');
+await pg.waitForFunction(() => window.__blob, null, { timeout: 120000 });
+const ansPdf = await pg.evaluate(async () => {
+  const ab = await window.__blob.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({ data: ab.slice(0), isEvalSupported: false }).promise;
+  const out = [];
+  for (let i = 1; i <= doc.numPages; i++)
+    out.push((await (await doc.getPage(i)).getTextContent()).items.map((t) => t.str).join(' '));
+  await doc.destroy();
+  return out.join(' ');
+});
+ok('오려 붙인 쪽에도 원문이 들어간다', /most correct statement/.test(ansPdf), '원문을 못 찾음');
+await pg.evaluate(() => { window.__blob = null; });
+
+await pg.$$eval('#mx .mnum', (els) => els.forEach((e) => { e.value = '1, 4, 5, 6'; }));
+await pg.click('#mgo');
+await pg.waitForSelector('#qs .q');
+ck('번호로 직접 고르면 정답 뱃지는 없다',
+  await pg.$$eval('#qs .q .tag.ans', (ls) => ls.length), 0);
+
 await pg.click('#mk');
 await pg.waitForFunction(() => window.__blob, null, { timeout: 120000 });
 const out = await pg.evaluate(async () => {

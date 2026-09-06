@@ -8,7 +8,7 @@ const cut = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b); if (i<0||j
 const code = cut('const RE_MARK', '/* ── 만든 파일을')
            + cut('/* Claude 가 pages 자리에', '\n$("rd")');
 const M = {};
-new Function('exports', code + '\nObject.assign(exports,{scanStarts,blocksOf,parseName,examKey,examName,termOrd,grabJSON,cleanPages});')(M);
+new Function('exports', code + '\nObject.assign(exports,{scanStarts,blocksOf,parseName,examKey,examName,termOrd,grabJSON,cleanPages,cleanAns});')(M);
 
 // 실제 2023 풀이 텍스트 (드라이브에서 읽은 구조 그대로)
 const P2023 = [
@@ -90,6 +90,13 @@ ck('쪽·페이지·p 는 떼고 받는다', ['12쪽', '8페이지', 'p52', 'pag
 ck('슬라이드 제목은 버린다',
   ['Congenital Anomaly(날문협착)', '3장 슬라이드', '날문협착 4쪽', '', null, undefined].map(M.cleanPages),
   ['', '', '', '', '', '']);
+
+/* 정답. 시험지에 답이 없는 해가 있어 Claude 가 풀어 준 것을 받는다. */
+ck('선지 번호는 그대로', ['4', '4번', '정답: 3', '(2)', 5].map(M.cleanAns), ['4', '4', '3', '2', '5']);
+ck('주관식은 글 그대로', M.cleanAns('조사망률 20/1000, 표준화사망률 18.3/1000'),
+  '조사망률 20/1000, 표준화사망률 18.3/1000');
+ck('없으면 빈 칸', ['', null, undefined].map(M.cleanAns), ['', '', '']);
+ck('너무 길면 자른다', M.cleanAns('가'.repeat(200)).length, 60);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
